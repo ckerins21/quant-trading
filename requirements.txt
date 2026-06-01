@@ -1,0 +1,9 @@
+pandas
+numpy
+yfinance
+matplotlib
+pytest
+fastapi
+uvicorn[standard]
+plotly
+jinja2

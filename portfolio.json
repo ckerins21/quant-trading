@@ -1,0 +1,36 @@
+{
+  "positions": [
+    {
+      "symbol": "SPY",
+      "shares": 5.0,
+      "avg_price": 500.0,
+      "date_added": "2026-01-01"
+    },
+    {
+      "symbol": "QQQ",
+      "shares": 3.0,
+      "avg_price": 450.0,
+      "date_added": "2026-01-01"
+    },
+    {
+      "symbol": "AAPL",
+      "shares": 10.0,
+      "avg_price": 200.0,
+      "date_added": "2026-01-01"
+    },
+    {
+      "symbol": "MSFT",
+      "shares": 5.0,
+      "avg_price": 380.0,
+      "date_added": "2026-01-01"
+    },
+    {
+      "symbol": "NVDA",
+      "shares": 8.0,
+      "avg_price": 130.0,
+      "date_added": "2026-01-01"
+    }
+  ],
+  "cash": 500.0,
+  "initial_capital": 10000.0
+}
