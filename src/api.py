@@ -147,6 +147,190 @@ def _grade(sharpe, mdd, vs_bh):
     return "D"
 
 
+# ── Stock classification ──────────────────────────────────────────────────────
+
+_SECTOR_DATA: dict = {
+    "Healthcare":             ("Defensive",         5),
+    "Consumer Defensive":     ("Defensive",         5),
+    "Utilities":              ("Defensive",         5),
+    "Communication Services": ("Defensive",         4),
+    "Technology":             ("Cyclical",          2),
+    "Consumer Cyclical":      ("Cyclical",          1),
+    "Financial Services":     ("Cyclical",          2),
+    "Financial":              ("Cyclical",          2),
+    "Industrials":            ("Cyclical",          2),
+    "Basic Materials":        ("Cyclical",          2),
+    "Energy":                 ("Cyclical",          3),
+    "Real Estate":            ("Cyclical",          2),
+}
+
+_SYMBOL_OVERRIDES: dict = {
+    "GLD":    ("Counter-Cyclical", 5), "IAU":    ("Counter-Cyclical", 5),
+    "NEM":    ("Counter-Cyclical", 5), "GOLD":   ("Counter-Cyclical", 5),
+    "AEM":    ("Counter-Cyclical", 5), "WPM":    ("Counter-Cyclical", 5),
+    "FNV":    ("Counter-Cyclical", 5), "RGLD":   ("Counter-Cyclical", 5),
+    "SPY":    ("Broad Market ETF", 3), "IVV":    ("Broad Market ETF", 3),
+    "VTI":    ("Broad Market ETF", 3), "VWRP.L": ("Broad Market ETF", 3),
+    "FWRG.L": ("Broad Market ETF", 3), "ACWI.L": ("Broad Market ETF", 3),
+    "ESGV":   ("ESG ETF",          3),
+    "QQQ":    ("Growth ETF",       2),
+    "SMH":    ("Sector ETF",       1), "XLK":   ("Sector ETF", 2), "XLE": ("Sector ETF", 3),
+    "VFEG.L": ("Emerging Market ETF", 2),
+    "IONQ":   ("Speculative", 1), "OKLO":  ("Speculative", 1),
+    "ACHR":   ("Speculative", 1), "RKLB":  ("Speculative", 1),
+    "BBAI":   ("Speculative", 1), "COIN":  ("Speculative", 1),
+    "MSTR":   ("Speculative", 1),
+}
+
+_TYPE_DESCS: dict = {
+    "Counter-Cyclical":    "Tends to RISE when markets fall. Gold and precious metals are classic safe havens — investors rush to them in a crisis.",
+    "Defensive":           "Holds its value in downturns. Demand for healthcare, food and utilities barely changes regardless of the economy.",
+    "Broad Market ETF":    "Tracks the whole market — falls in recessions but has historically always recovered to new highs. Good for long-term holding.",
+    "ESG ETF":             "Broad market ETF with ESG screening — similar recession profile to the total market.",
+    "Growth ETF":          "Heavy technology weighting. Falls harder than the broad market in recessions and rate-hike cycles.",
+    "Sector ETF":          "Concentrated in one sector. Recession risk depends on how cyclical that sector is — semiconductors are very cyclical.",
+    "Cyclical":            "Follows the economic cycle — rises in booms, falls in recessions as company revenues decline.",
+    "Speculative":         "Pre-profit or very early-stage company. High potential upside but extreme downside risk in any downturn.",
+    "Emerging Market ETF": "Developing economies — higher growth potential but more volatile, especially when investors flee to safety.",
+    "Unknown":             "Sector data not available — classification uncertain.",
+}
+
+_RECESSION_LABELS: dict = {
+    5: "Very High — historically holds value or gains during recessions",
+    4: "High — typically outperforms the market in downturns",
+    3: "Moderate — falls with the market, usually less than average",
+    2: "Low — expected to fall significantly in a recession",
+    1: "Very Low — could lose 50-80%+ in a severe recession",
+}
+
+_BEST_TIME: dict = {
+    "Counter-Cyclical":    "Buy during bull markets when investors ignore them, or just before economic slowdowns begin.",
+    "Defensive":           "Good at almost any time. Best during late bull markets when they get cheap relative to growth stocks.",
+    "Broad Market ETF":    "Good anytime for long-term investors. Buy more during significant corrections (−15%+). Dollar-cost averaging works excellently.",
+    "ESG ETF":             "Same as broad market ETFs — ideal for monthly regular investing.",
+    "Growth ETF":          "Best in low-interest-rate, growth-friendly environments. Buy on significant tech sector pullbacks.",
+    "Sector ETF":          "Cyclical sectors: buy at cycle bottoms when the news is worst. Time entry to economic cycle.",
+    "Cyclical":            "Best bought at economic cycle bottoms — when pessimism is highest and the news feels terrible.",
+    "Speculative":         "Only buy on major dips in bull market environments. Keep positions tiny (1-3% max). Never chase after big runs.",
+    "Emerging Market ETF": "Best when the USD is weakening and global growth is accelerating.",
+    "Unknown":             "Research the fundamentals first. Look for consistent revenue growth and a clear path to profitability.",
+}
+
+
+def _cap_tier(market_cap) -> tuple:
+    if not market_cap:
+        return "Unknown", "Market cap data not available."
+    if market_cap >= 200e9:
+        return "Mega Cap", ("Over $200B — among the largest companies in the world. Deep institutional ownership and high liquidity. "
+                            "Very unlikely to disappear, but also limited chance of spectacular gains.")
+    if market_cap >= 10e9:
+        return "Large Cap", ("$10B–$200B — established, mature businesses widely covered by analysts. "
+                             "More stable than smaller companies with a good balance of stability and growth potential.")
+    if market_cap >= 2e9:
+        return "Mid Cap", ("$2B–$10B — growing companies with a meaningful market presence. "
+                           "More volatile than large caps but offer better long-term growth potential.")
+    if market_cap >= 300e6:
+        return "Small Cap", ("$300M–$2B — smaller businesses with high growth upside. "
+                             "More volatile and less liquid than larger stocks. Higher risk of permanent loss.")
+    return "Micro Cap", ("Under $300M — very small and thinly traded. "
+                         "Enormous potential gains but equally large risk of total loss. Keep any positions very small.")
+
+
+def _classify_stock(symbol: str, sector: str, beta, market_cap) -> dict:
+    override = _SYMBOL_OVERRIDES.get(symbol.upper())
+    if override:
+        stock_type, rec_score = override
+    else:
+        sec = _SECTOR_DATA.get(sector or "")
+        stock_type, rec_score = sec if sec else ("Unknown", 3)
+    cap_tier, cap_desc = _cap_tier(market_cap)
+    return {
+        "stock_type":      stock_type,
+        "recession_score": rec_score,
+        "type_desc":       _TYPE_DESCS.get(stock_type, ""),
+        "recession_label": _RECESSION_LABELS.get(rec_score, ""),
+        "cap_tier":        cap_tier,
+        "cap_desc":        cap_desc,
+        "best_time":       _BEST_TIME.get(stock_type, ""),
+    }
+
+
+# ── Scenario impact ranges ────────────────────────────────────────────────────
+# Each entry: (low_pct, high_pct, rating, note)
+# rating: "safe" | "moderate" | "risk" | "high_risk"
+
+_SCENARIO_IMPACTS: dict = {
+    "recession": {
+        "Counter-Cyclical":    ( 10,  35, "safe",      "Gold & precious metals typically rise in recessions as investors seek safety."),
+        "Defensive":           ( -5,   5, "safe",      "Healthcare, staples and utilities — demand is stable regardless of the economy."),
+        "Broad Market ETF":    (-40, -25, "moderate",  "Broad ETFs fall with the overall market in recessions."),
+        "ESG ETF":             (-35, -20, "moderate",  "ESG broad ETFs track the market — similar recession exposure."),
+        "Growth ETF":          (-50, -35, "risk",      "Tech-heavy ETFs fall harder as growth expectations are slashed and rates stay high."),
+        "Sector ETF":          (-55, -30, "risk",      "Semiconductor and cyclical sector ETFs can drop sharply."),
+        "Cyclical":            (-50, -30, "risk",      "Cyclical stocks underperform as company revenues fall and budgets are cut."),
+        "Speculative":         (-80, -55, "high_risk", "Pre-profit speculative stocks can fall 60-80%+ as investors flee risk entirely."),
+        "Emerging Market ETF": (-50, -35, "risk",      "Emerging markets fall harder in global recessions as capital flows to safety."),
+        "Unknown":             (-40, -20, "moderate",  "Impact uncertain — no sector classification available."),
+    },
+    "tech_crash": {
+        "Counter-Cyclical":    ( 10,  25, "safe",      "Gold rises as tech-heavy portfolios rotate to safety."),
+        "Defensive":           ( -5,   5, "safe",      "Non-tech companies are relatively insulated from a tech crash."),
+        "Broad Market ETF":    (-25, -15, "moderate",  "The S&P 500 is 30%+ tech — a tech crash hits broad ETFs meaningfully."),
+        "ESG ETF":             (-25, -15, "moderate",  "ESG broad ETFs also have significant tech exposure."),
+        "Growth ETF":          (-55, -40, "high_risk", "Nasdaq/tech ETFs are the epicentre of a tech crash."),
+        "Sector ETF":          (-60, -35, "high_risk", "Semiconductor ETFs can fall 40-60% in severe tech downturns."),
+        "Cyclical":            (-45, -25, "risk",      "Tech cyclicals and semiconductor stocks fall sharply."),
+        "Speculative":         (-75, -50, "high_risk", "Speculative tech stocks are hit hardest — investors cut risk completely."),
+        "Emerging Market ETF": (-35, -20, "risk",      "EM with tech exposure also suffers in a tech bear market."),
+        "Unknown":             (-40, -20, "moderate",  "Impact uncertain."),
+    },
+    "inflation": {
+        "Counter-Cyclical":    ( 15,  30, "safe",      "Gold is one of the best inflation hedges historically — preserves purchasing power."),
+        "Defensive":           ( -5,  10, "safe",      "Consumer staples can raise prices to protect margins — relatively resilient."),
+        "Broad Market ETF":    (-20, -10, "moderate",  "Inflation erodes real returns; the Fed raises rates, pressuring all valuations."),
+        "ESG ETF":             (-20, -10, "moderate",  "Similar to broad market exposure."),
+        "Growth ETF":          (-35, -20, "risk",      "Higher rates compress growth stock valuations — Nasdaq is most exposed."),
+        "Sector ETF":          (-30, -15, "risk",      "Tech/semiconductor ETFs suffer when the cost of capital rises."),
+        "Cyclical":            (-30, -15, "risk",      "Growth tech stocks de-rate sharply when rates rise to fight inflation."),
+        "Speculative":         (-55, -30, "high_risk", "Rate hikes devastate pre-profit companies — their future earnings are worth far less."),
+        "Emerging Market ETF": (-35, -20, "risk",      "Strong dollar and high rates hurt emerging market assets."),
+        "Unknown":             (-25, -10, "moderate",  "Impact uncertain."),
+    },
+    "recovery": {
+        "Counter-Cyclical":    (-10,   5, "moderate", "Gold tends to underperform in bull markets as risk appetite returns."),
+        "Defensive":           (  0,  15, "moderate", "Defensive stocks lag in recoveries — investors chase higher-return cyclicals."),
+        "Broad Market ETF":    ( 20,  40, "safe",     "Broad market ETFs fully participate in economic recoveries."),
+        "ESG ETF":             ( 20,  35, "safe",     "ESG ETFs track the broad market recovery."),
+        "Growth ETF":          ( 30,  60, "safe",     "Tech and growth stocks typically lead market recoveries."),
+        "Sector ETF":          ( 25,  60, "safe",     "Cyclical sector ETFs can rally strongly from depressed levels."),
+        "Cyclical":            ( 30,  70, "safe",     "Cyclicals lead recoveries as economic activity ramps back up."),
+        "Speculative":         ( 50, 200, "safe",     "Speculative stocks can multiply 2-4x in strong risk-on recoveries."),
+        "Emerging Market ETF": ( 25,  50, "safe",     "EM tends to outperform in global recoveries."),
+        "Unknown":             ( 15,  35, "moderate", "Recovery upside uncertain."),
+    },
+    "geopolitical": {
+        "Counter-Cyclical":    ( 20,  40, "safe",      "Gold surges in geopolitical crises — the ultimate safe haven asset."),
+        "Defensive":           ( -5,  10, "safe",      "Defensive companies are relatively insulated from geopolitical shocks."),
+        "Broad Market ETF":    (-25, -15, "moderate",  "Geopolitical shocks cause sharp drops — usually followed by recovery."),
+        "ESG ETF":             (-25, -15, "moderate",  "Similar to broad market — sharp drop but tends to recover."),
+        "Growth ETF":          (-35, -20, "risk",      "Tech sells off in risk-off events but often recovers once tensions ease."),
+        "Sector ETF":          (-30, -10, "risk",      "Depends on sector — defence benefits, consumer cyclical suffers."),
+        "Cyclical":            (-30, -15, "risk",      "Cyclicals sell off in risk-off environments."),
+        "Speculative":         (-60, -35, "high_risk", "Speculative stocks are dumped first in any risk-off event."),
+        "Emerging Market ETF": (-40, -25, "risk",      "EM often suffers more in geopolitical crises."),
+        "Unknown":             (-30, -15, "moderate",  "Impact uncertain."),
+    },
+}
+
+_SCENARIO_META: dict = {
+    "recession":    ("🔴", "Global Recession",          "How your portfolio holds up in a 2008-style recession over 6 months."),
+    "tech_crash":   ("💻", "Tech Crash (−40% on tech)", "Your exposure if technology stocks fall 35-50%, similar to 2022 or the dot-com bust."),
+    "inflation":    ("📈", "Inflation / Rate Hikes",    "How your portfolio holds up if inflation stays high and central banks raise rates aggressively."),
+    "recovery":     ("🟢", "Market Recovery / Bull Run","What your portfolio could do if the economy recovers strongly over 6-12 months."),
+    "geopolitical": ("⚡", "Geopolitical Shock",        "How your portfolio would react to a major geopolitical event over 1-3 months."),
+}
+
+
 # ── pydantic bodies ───────────────────────────────────────────────────────────
 
 class WatchlistBody(BaseModel):
@@ -937,6 +1121,8 @@ async def recommend(symbol: str):
         "summary":        summary,
         "action_own":     action_own,
         "action_want":    action_want,
+        # ── stock classification ──
+        **_classify_stock(symbol, fund["sector"], fund.get("beta"), fund.get("market_cap")),
     }
 
 
@@ -1796,3 +1982,169 @@ async def add_to_watchlist(symbol: str):
         _save_watchlist(watchlist)
     
     return {"symbols": watchlist, "added": symbol}
+
+
+# ── Portfolio scenario analysis ───────────────────────────────────────────────
+
+@app.get("/api/portfolio/scenario")
+async def portfolio_scenario():
+    portfolio = _load_portfolio()
+    positions = portfolio.get("positions", [])
+    if not positions:
+        return {"error": "No positions in portfolio"}
+
+    symbols = [pos["symbol"] for pos in positions]
+    live_prices = _batch_prices(symbols) if symbols else {}
+
+    classified = []
+    total_value = 0.0
+
+    for pos in positions:
+        sym = pos["symbol"]
+        price = live_prices.get(sym) or pos["avg_price"]
+        mkt_val = pos["shares"] * price
+
+        cached = _info_cache.get(sym)
+        if cached and time.time() - cached[0] < 86400:
+            fd = cached[1]
+        else:
+            fd = {"sector": "—", "market_cap": None, "beta": None, "dividend_yield": None}
+            try:
+                info = yf.Ticker(sym).info
+                fd = {
+                    "name":           info.get("longName", sym),
+                    "sector":         info.get("sector", "—"),
+                    "industry":       info.get("industry", "—"),
+                    "market_cap":     info.get("marketCap"),
+                    "beta":           info.get("beta"),
+                    "pe":             info.get("trailingPE"),
+                    "fwd_pe":         info.get("forwardPE"),
+                    "dividend_yield": info.get("dividendYield"),
+                    "avg_volume":     info.get("averageVolume"),
+                    "description":    info.get("longBusinessSummary", "")[:500],
+                }
+                _info_cache[sym] = (time.time(), fd)
+            except Exception:
+                pass
+
+        cls = _classify_stock(sym, fd.get("sector", "—"), fd.get("beta"), fd.get("market_cap"))
+        classified.append({
+            "symbol":        sym,
+            "shares":        pos["shares"],
+            "avg_price":     pos["avg_price"],
+            "current_price": round(price, 2),
+            "market_value":  round(mkt_val, 2),
+            "sector":        fd.get("sector", "—"),
+            "beta":          fd.get("beta"),
+            **cls,
+        })
+        total_value += mkt_val
+
+    if total_value <= 0:
+        return {"error": "Could not calculate portfolio value"}
+
+    # Portfolio-level allocation by type
+    type_alloc: dict = {}
+    for c in classified:
+        t = c["stock_type"]
+        type_alloc[t] = type_alloc.get(t, 0) + c["market_value"]
+    type_pcts = {t: round(v / total_value * 100, 1) for t, v in type_alloc.items()}
+
+    weighted_beta = sum((c["beta"] or 1.0) * c["market_value"] / total_value for c in classified)
+    defensive_pct = sum(type_pcts.get(t, 0) for t in ("Defensive", "Counter-Cyclical"))
+    cyclical_pct  = sum(type_pcts.get(t, 0) for t in ("Cyclical", "Growth ETF", "Sector ETF"))
+    spec_pct      = type_pcts.get("Speculative", 0)
+    etf_pct       = sum(type_pcts.get(t, 0) for t in ("Broad Market ETF", "ESG ETF", "Emerging Market ETF"))
+
+    def _fmt_impact(low, high):
+        def _s(v):
+            return f"+{v}%" if v > 0 else f"{v}%"
+        return f"{_s(low)} to {_s(high)}"
+
+    scenarios = []
+    for key, (icon, name, desc) in _SCENARIO_META.items():
+        impacts = _SCENARIO_IMPACTS[key]
+        pos_ratings = []
+        total_weighted = 0.0
+        for c in classified:
+            imp = impacts.get(c["stock_type"], impacts["Unknown"])
+            low_pct, high_pct, rating, note = imp
+            midpoint = (low_pct + high_pct) / 2
+            weight = c["market_value"] / total_value
+            total_weighted += midpoint * weight
+            pos_ratings.append({
+                "symbol":       c["symbol"],
+                "rating":       rating,
+                "impact":       _fmt_impact(low_pct, high_pct),
+                "note":         note,
+                "weight_pct":   round(weight * 100, 1),
+                "stock_type":   c["stock_type"],
+                "market_value": c["market_value"],
+            })
+        rating_order = {"high_risk": 0, "risk": 1, "moderate": 2, "safe": 3}
+        pos_ratings.sort(key=lambda x: rating_order.get(x["rating"], 2))
+
+        # Portfolio-level advice per scenario
+        gold_syms = {"NEM", "GOLD", "AEM", "WPM", "FNV", "RGLD", "GLD"}
+        gold_pct = sum(c["market_value"] for c in classified if c["symbol"] in gold_syms) / total_value * 100
+
+        if key == "recession":
+            if spec_pct > 15:
+                advice = f"Your speculative positions ({spec_pct:.0f}% of portfolio) are the biggest risk — consider reducing these first. They can fall 60-80%+ in a recession. "
+            else:
+                advice = ""
+            if gold_pct > 3:
+                advice += f"Your gold holdings ({gold_pct:.0f}%) are a solid recession hedge — consider holding or adding. "
+            elif defensive_pct < 20:
+                advice += "You have limited defensive exposure. Consider adding gold miners (NEM, AEM) or healthcare stocks. "
+            advice += "Tip: In recessions, cash gives you the power to buy great companies at discounted prices."
+        elif key == "tech_crash":
+            tech_exp = sum(type_pcts.get(t, 0) for t in ("Growth ETF", "Sector ETF", "Cyclical", "Speculative"))
+            if tech_exp > 50:
+                advice = f"Your portfolio has heavy tech/growth exposure ({tech_exp:.0f}%). A tech crash of 35-50% would significantly impact your portfolio. "
+            else:
+                advice = "Your portfolio has some tech exposure but meaningful diversification elsewhere. "
+            if gold_pct < 10:
+                advice += "Adding gold (GLD, NEM, GOLD) as a hedge would cushion tech crashes — gold often rises when tech falls."
+        elif key == "inflation":
+            if gold_pct > 5:
+                advice = f"Your gold holdings ({gold_pct:.0f}%) are an excellent inflation hedge — gold historically preserves purchasing power. "
+            else:
+                advice = "Consider adding gold exposure (GLD, NEM, GOLD) — gold is one of the best inflation hedges historically. "
+            advice += "High-growth tech stocks suffer most when rates rise to fight inflation — their future earnings are worth less at higher discount rates."
+        elif key == "recovery":
+            if spec_pct > 5:
+                advice = f"Your speculative positions ({spec_pct:.0f}%) could be big winners in a recovery — some may multiply 2-4x. "
+            else:
+                advice = ""
+            if cyclical_pct > 20:
+                advice += f"Your cyclical tech holdings ({cyclical_pct:.0f}%) are well-positioned to lead a recovery. "
+            if etf_pct > 20:
+                advice += f"Your broad ETFs ({etf_pct:.0f}%) will capture the full market upswing. "
+            advice += "In a strong recovery, reducing gold/defensive exposure and holding more cyclicals can enhance gains."
+        else:  # geopolitical
+            advice = "Geopolitical shocks tend to cause sharp, fast drops followed by equally fast recovery — often within weeks. "
+            if spec_pct > 10:
+                advice += f"Speculative positions ({spec_pct:.0f}%) are dumped first in risk-off events — be prepared for sharp drops. "
+            advice += "Gold is the most reliable geopolitical hedge. If tensions look prolonged, consider adding GLD or gold miners."
+
+        scenarios.append({
+            "key":              key,
+            "name":             name,
+            "icon":             icon,
+            "description":      desc,
+            "portfolio_impact": round(total_weighted, 1),
+            "advice":           advice.strip(),
+            "positions":        pos_ratings,
+        })
+
+    return {
+        "total_value":   round(total_value, 2),
+        "weighted_beta": round(weighted_beta, 2),
+        "type_pcts":     type_pcts,
+        "defensive_pct": round(defensive_pct, 1),
+        "cyclical_pct":  round(cyclical_pct, 1),
+        "spec_pct":      round(spec_pct, 1),
+        "etf_pct":       round(etf_pct, 1),
+        "scenarios":     scenarios,
+    }

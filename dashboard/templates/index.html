@@ -434,6 +434,7 @@ tbody tr:hover td{background:rgba(88,166,255,.03)}
   <button class="tab"     data-tab="radar">🎯 Radar</button>
   <button class="tab"     data-tab="watchlist">👁️ Watchlist</button>
   <button class="tab"     data-tab="research">🔬 Research</button>
+  <button class="tab"     data-tab="strategy">🛡️ Strategy</button>
 </nav>
 
 <!-- PANELS -->
@@ -903,6 +904,23 @@ tbody tr:hover td{background:rgba(88,166,255,.03)}
   </div>
 </div><!-- /research -->
 
+<!-- ══ STRATEGY PANEL ══════════════════════════════════════════════════════ -->
+<div class="panel" id="p-strategy">
+  <div style="flex:1;overflow-y:auto;padding:20px;max-width:1050px;width:100%;margin:0 auto">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:20px">
+      <div>
+        <div style="font-size:1rem;font-weight:700;margin-bottom:4px">🛡️ Portfolio Strategy</div>
+        <div style="font-size:.76rem;color:var(--muted)">How your portfolio holds up across 5 different market scenarios — recession, tech crash, inflation, recovery and geopolitical shock.</div>
+      </div>
+      <button class="btn btn-ghost" id="strategy-refresh-btn">↻ Re-analyse</button>
+    </div>
+    <div id="strategy-exposure" style="display:none;background:var(--panel);border:1px solid var(--border);border-radius:var(--r);padding:16px 20px;margin-bottom:20px"></div>
+    <div id="strategy-scenarios" style="display:flex;flex-direction:column;gap:14px">
+      <div style="color:var(--muted);font-size:.84rem;padding:32px;text-align:center">Click ↻ Re-analyse or switch to this tab to load your portfolio strategy.</div>
+    </div>
+  </div>
+</div><!-- /strategy -->
+
 </div><!-- /panels -->
 </div><!-- /app -->
 
@@ -1028,6 +1046,7 @@ function initTabs() {
       if (tab.dataset.tab === 'research') loadResearch();
       if (tab.dataset.tab === 'watchlist') loadWatchlistTab();
       if (tab.dataset.tab === 'radar') loadRadar();
+      if (tab.dataset.tab === 'strategy') loadPortfolioStrategy();
     });
   });
 }
@@ -1828,6 +1847,55 @@ function renderSignal(d) {
         </div>
       </div>
 
+      <!-- ②b STOCK PROFILE — type, recession safety, market cap tier, dividend income -->
+      <div style="padding:16px;border-bottom:1px solid var(--border)">
+        <div class="sig-col-title">🏷️ Stock Profile &amp; Classification</div>
+        <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:14px;margin-bottom:${d.dividend_yield ? 12 : 0}px">
+
+          <div style="background:var(--card);border:1px solid var(--border);border-radius:var(--r);padding:12px 14px">
+            <div style="font-size:.62rem;text-transform:uppercase;letter-spacing:.08em;color:var(--dim);margin-bottom:7px">Stock Type</div>
+            <div style="margin-bottom:6px">
+              <span style="padding:3px 11px;border-radius:20px;font-size:.76rem;font-weight:700;
+                background:${d.stock_type==='Counter-Cyclical'?'rgba(63,185,80,.2)':d.stock_type==='Defensive'?'rgba(88,166,255,.2)':d.stock_type==='Speculative'?'rgba(248,81,73,.2)':d.stock_type&&d.stock_type.includes('ETF')?'rgba(163,113,247,.2)':'rgba(227,179,65,.2)'};
+                color:${d.stock_type==='Counter-Cyclical'?'var(--green)':d.stock_type==='Defensive'?'var(--accent)':d.stock_type==='Speculative'?'var(--red)':d.stock_type&&d.stock_type.includes('ETF')?'var(--purple)':'var(--yellow)'};
+                border:1px solid currentColor">
+                ${d.stock_type || '—'}
+              </span>
+            </div>
+            <div style="font-size:.77rem;color:var(--muted);line-height:1.6">${d.type_desc || '—'}</div>
+          </div>
+
+          <div style="background:var(--card);border:1px solid var(--border);border-radius:var(--r);padding:12px 14px">
+            <div style="font-size:.62rem;text-transform:uppercase;letter-spacing:.08em;color:var(--dim);margin-bottom:7px">Recession Safety Score</div>
+            <div style="font-size:1.1rem;margin-bottom:5px;line-height:1">${'⭐'.repeat(d.recession_score||0)}${'☆'.repeat(5-(d.recession_score||0))}</div>
+            <div style="font-size:.77rem;color:var(--muted);line-height:1.5">${d.recession_label || '—'}</div>
+          </div>
+
+          <div style="background:var(--card);border:1px solid var(--border);border-radius:var(--r);padding:12px 14px">
+            <div style="font-size:.62rem;text-transform:uppercase;letter-spacing:.08em;color:var(--dim);margin-bottom:7px">Market Cap Tier</div>
+            <div style="font-size:.9rem;font-weight:700;color:var(--accent);margin-bottom:5px">${d.cap_tier || '—'}</div>
+            <div style="font-size:.77rem;color:var(--muted);line-height:1.5">${d.cap_desc || '—'}</div>
+          </div>
+
+          <div style="background:var(--card);border:1px solid var(--border);border-radius:var(--r);padding:12px 14px">
+            <div style="font-size:.62rem;text-transform:uppercase;letter-spacing:.08em;color:var(--dim);margin-bottom:7px">Best Time to Buy</div>
+            <div style="font-size:.77rem;color:var(--muted);line-height:1.6">${d.best_time || '—'}</div>
+          </div>
+        </div>
+
+        ${d.dividend_yield ? `
+        <div style="background:rgba(63,185,80,.07);border:1px solid rgba(63,185,80,.25);border-radius:var(--r);padding:12px 16px;font-size:.82rem;line-height:1.7">
+          <strong style="color:var(--green)">💰 Dividend Income</strong>
+          — this stock pays a <strong>${(d.dividend_yield*100).toFixed(2)}%</strong> annual yield.
+          Holding 100 shares at today's price
+          (<strong>$${d.price.toFixed(2)}</strong>) would earn roughly
+          <strong style="color:var(--green)">$${(d.price * 100 * d.dividend_yield).toFixed(0)}/year</strong>
+          in dividends
+          (<strong>$${(d.price * 100 * d.dividend_yield / 12).toFixed(0)}/month</strong>).
+          Dividends are usually paid quarterly.
+        </div>` : ''}
+      </div>
+
       <!-- ③ PERFORMANCE OVER TIME -->
       <div style="padding:16px;border-bottom:1px solid var(--border)">
         <div class="sig-col-title">📈 Performance — How Much It Has Moved</div>
@@ -1929,6 +1997,21 @@ function renderSignal(d) {
             <div class="sig-row"><span class="lbl">Distance from high</span><span class="val" style="color:var(--red)">${d.pct_from_high.toFixed(1)}%</span></div>
             <div class="sig-row"><span class="lbl">52-week low</span><span class="val">${$(d.low_52w)}</span></div>
             <div class="sig-row"><span class="lbl">Distance from low</span><span class="val" style="color:var(--green)">+${d.pct_from_low.toFixed(1)}%</span></div>
+            <div style="margin-top:12px">
+              <div style="display:flex;justify-content:space-between;font-size:.66rem;color:var(--dim);margin-bottom:5px">
+                <span>52W Low $${d.low_52w.toFixed(0)}</span>
+                <span>52W High $${d.high_52w.toFixed(0)}</span>
+              </div>
+              <div style="height:7px;background:linear-gradient(to right,var(--red),var(--yellow),var(--green));border-radius:4px;position:relative;margin-bottom:8px">
+                <div style="position:absolute;top:-5px;width:16px;height:16px;border-radius:50%;background:var(--panel);border:2.5px solid white;box-shadow:0 0 4px rgba(0,0,0,.5);transform:translateX(-50%);
+                  left:${Math.max(2, Math.min(98, (d.price - d.low_52w) / (d.high_52w - d.low_52w || 1) * 100)).toFixed(1)}%"></div>
+              </div>
+              <div style="text-align:center;font-size:.72rem;color:var(--muted)">
+                Currently at <strong style="color:${((d.price-d.low_52w)/(d.high_52w-d.low_52w||1))<0.3?'var(--green)':((d.price-d.low_52w)/(d.high_52w-d.low_52w||1))>0.8?'var(--red)':'var(--text)'}">${((d.price - d.low_52w) / (d.high_52w - d.low_52w || 1) * 100).toFixed(0)}%</strong>
+                of its 52-week range
+                ${((d.price-d.low_52w)/(d.high_52w-d.low_52w||1))<0.25?' — near the bottom, historically a better entry zone':((d.price-d.low_52w)/(d.high_52w-d.low_52w||1))>0.8?' — near the top, be cautious chasing here':''}
+              </div>
+            </div>
           </div>
           <div class="sig-col">
             <div class="sig-col-title" style="font-size:.68rem">Support &amp; Resistance (recent floor/ceiling prices)</div>
@@ -2347,8 +2430,8 @@ async function loadWatchlistTab() {
 
 function goToSignal(sym) {
   document.querySelector('[data-tab=signals]').click();
-  const inp = document.getElementById('sig-inp') || document.getElementById('sig-sym');
-  if (inp) { inp.value = sym; document.getElementById('sig-run').click(); }
+  const inp = document.getElementById('sig-inp');
+  if (inp) { inp.value = sym; document.getElementById('sig-go').click(); }
 }
 
 function trackToPortfolio(sym) {
@@ -2480,8 +2563,8 @@ function renderMovers(movers) {
     const bg  = m.change_pct > 0 ? 'rgba(63,185,80,.06)' : m.change_pct < 0 ? 'rgba(248,81,73,.06)' : '';
     return `<div class="mover-cell" style="background:${bg}" onclick="
       document.querySelector('[data-tab=signals]').click();
-      document.getElementById('sig-sym').value='${m.symbol}';
-      document.getElementById('sig-run').click()">
+      document.getElementById('sig-inp').value='${m.symbol}';
+      document.getElementById('sig-go').click()">
       <div class="mover-sym">${m.symbol}</div>
       <div class="mover-price">$${m.price.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
       <div class="mover-chg" style="color:${col}">${m.change_pct >= 0 ? '+' : ''}${m.change_pct.toFixed(2)}%</div>
@@ -2629,6 +2712,145 @@ function status(type, msg) {
 
 function openModal(id)  { document.getElementById(id).classList.add('on'); }
 function closeModal(id) { document.getElementById(id).classList.remove('on'); }
+
+// ══ STRATEGY ════════════════════════════════════════════
+document.getElementById('strategy-refresh-btn').addEventListener('click', () => loadPortfolioStrategy(true));
+
+async function loadPortfolioStrategy(force = false) {
+  const el = document.getElementById('strategy-scenarios');
+  if (!force && el.querySelector('.strategy-card')) return;
+  el.innerHTML = `<div style="padding:40px;text-align:center"><div class="spin" style="margin:auto"></div><div style="margin-top:12px;color:var(--muted);font-size:.84rem">Analysing your portfolio… fetching sector data for each holding.</div></div>`;
+  document.getElementById('strategy-exposure').style.display = 'none';
+
+  try {
+    const r = await fetch('/api/portfolio/scenario');
+    if (!r.ok) { const e = await r.json(); throw new Error(e.error || 'Failed'); }
+    const data = await r.json();
+    if (data.error) { el.innerHTML = `<div style="padding:24px;color:var(--red)">${data.error}</div>`; return; }
+    renderPortfolioStrategy(data);
+  } catch(e) {
+    el.innerHTML = `<div style="padding:24px;color:var(--red)">⚠️ ${e.message}</div>`;
+  }
+}
+
+function renderPortfolioStrategy(data) {
+  const {type_pcts, weighted_beta, defensive_pct, cyclical_pct, spec_pct, etf_pct, scenarios, total_value} = data;
+
+  // ── Exposure bar ──
+  const expEl = document.getElementById('strategy-exposure');
+  expEl.style.display = 'block';
+
+  const typeColors = {
+    'Counter-Cyclical': '#3fb950', 'Defensive': '#58a6ff',
+    'Broad Market ETF': '#a371f7', 'ESG ETF': '#a371f7', 'Emerging Market ETF': '#d2a8ff',
+    'Growth ETF': '#e3b341', 'Sector ETF': '#f0883e',
+    'Cyclical': '#f0883e', 'Speculative': '#f85149', 'Unknown': '#8b949e',
+  };
+  const typeOrder = ['Counter-Cyclical','Defensive','Broad Market ETF','ESG ETF','Emerging Market ETF','Growth ETF','Sector ETF','Cyclical','Speculative','Unknown'];
+  const sorted = typeOrder.filter(t => type_pcts[t]).map(t => ({type: t, pct: type_pcts[t]}));
+
+  const barSegments = sorted.map(({type, pct}) =>
+    `<div title="${type}: ${pct}%" style="width:${pct}%;background:${typeColors[type]||'#8b949e'};height:100%;transition:.3s"></div>`
+  ).join('');
+
+  const legend = sorted.map(({type, pct}) =>
+    `<span style="display:inline-flex;align-items:center;gap:5px;font-size:.75rem;color:var(--text)">
+      <span style="width:10px;height:10px;border-radius:2px;background:${typeColors[type]||'#8b949e'};flex-shrink:0"></span>
+      ${type} <span style="color:var(--muted)">${pct}%</span>
+    </span>`
+  ).join('');
+
+  const betaDesc = weighted_beta < 0.7 ? 'Low risk — your portfolio moves less than the market'
+    : weighted_beta < 1.2 ? 'Moderate — moves roughly in line with the market'
+    : weighted_beta < 1.8 ? 'High — your portfolio amplifies market moves'
+    : 'Very High — expect large swings, well above the market';
+
+  expEl.innerHTML = `
+    <div style="font-size:.72rem;font-weight:600;text-transform:uppercase;letter-spacing:.09em;color:var(--dim);margin-bottom:10px">Portfolio Exposure Breakdown</div>
+    <div style="height:16px;border-radius:8px;overflow:hidden;display:flex;margin-bottom:10px;background:var(--card)">${barSegments}</div>
+    <div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:12px">${legend}</div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:4px">
+      <div style="background:var(--card);border:1px solid var(--border);border-radius:var(--r);padding:9px 12px;text-align:center">
+        <div style="font-size:.62rem;text-transform:uppercase;color:var(--dim);margin-bottom:3px">Defensive / Gold</div>
+        <div style="font-size:1rem;font-weight:700;color:var(--green)">${defensive_pct.toFixed(0)}%</div>
+      </div>
+      <div style="background:var(--card);border:1px solid var(--border);border-radius:var(--r);padding:9px 12px;text-align:center">
+        <div style="font-size:.62rem;text-transform:uppercase;color:var(--dim);margin-bottom:3px">Broad ETFs</div>
+        <div style="font-size:1rem;font-weight:700;color:var(--purple)">${etf_pct.toFixed(0)}%</div>
+      </div>
+      <div style="background:var(--card);border:1px solid var(--border);border-radius:var(--r);padding:9px 12px;text-align:center">
+        <div style="font-size:.62rem;text-transform:uppercase;color:var(--dim);margin-bottom:3px">Cyclical / Growth</div>
+        <div style="font-size:1rem;font-weight:700;color:var(--yellow)">${cyclical_pct.toFixed(0)}%</div>
+      </div>
+      <div style="background:var(--card);border:1px solid var(--border);border-radius:var(--r);padding:9px 12px;text-align:center">
+        <div style="font-size:.62rem;text-transform:uppercase;color:var(--dim);margin-bottom:3px">Speculative</div>
+        <div style="font-size:1rem;font-weight:700;color:var(--red)">${spec_pct.toFixed(0)}%</div>
+      </div>
+    </div>
+    <div style="margin-top:10px;font-size:.77rem;color:var(--muted)">
+      Portfolio beta: <strong style="color:${weighted_beta<1?'var(--green)':weighted_beta<1.5?'var(--yellow)':'var(--red)'}">${weighted_beta.toFixed(2)}</strong>
+      — ${betaDesc}
+    </div>`;
+
+  // ── Scenario cards ──
+  const ratingStyle = {
+    safe:      {col: 'var(--green)',  bg: 'rgba(63,185,80,.1)',   label: 'SAFE',          icon: '🟢'},
+    moderate:  {col: 'var(--yellow)', bg: 'rgba(227,179,65,.1)',  label: 'MODERATE RISK', icon: '🟡'},
+    risk:      {col: 'orange',        bg: 'rgba(240,136,62,.1)',  label: 'AT RISK',       icon: '🟠'},
+    high_risk: {col: 'var(--red)',    bg: 'rgba(248,81,73,.1)',   label: 'HIGH RISK',     icon: '🔴'},
+  };
+
+  const impactCol = v => v >= 5 ? 'var(--green)' : v >= -10 ? 'var(--text)' : v >= -25 ? 'var(--yellow)' : 'var(--red)';
+
+  const cards = scenarios.map(s => {
+    const impCol = impactCol(s.portfolio_impact);
+    const impStr = s.portfolio_impact >= 0 ? `+${s.portfolio_impact.toFixed(0)}%` : `${s.portfolio_impact.toFixed(0)}%`;
+
+    // Group positions by rating
+    const groups = {};
+    s.positions.forEach(p => { if (!groups[p.rating]) groups[p.rating] = []; groups[p.rating].push(p); });
+    const ratingKeys = ['high_risk','risk','moderate','safe'].filter(k => groups[k]);
+
+    const posRows = ratingKeys.map(rk => {
+      const rs = ratingStyle[rk];
+      const pills = groups[rk].map(p =>
+        `<span title="${p.note}" style="display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:10px;font-size:.74rem;background:var(--card);border:1px solid var(--border);cursor:help">
+          <strong>${p.symbol}</strong>
+          <span style="color:${p.impact.startsWith('+') ? 'var(--green)' : 'var(--red)'}">${p.impact}</span>
+        </span>`
+      ).join('');
+      return `
+        <div style="display:flex;align-items:flex-start;gap:10px;margin-bottom:8px">
+          <div style="flex-shrink:0;min-width:100px;padding:3px 8px;border-radius:10px;font-size:.66rem;font-weight:700;text-align:center;
+            background:${rs.bg};color:${rs.col};border:1px solid ${rs.col}">${rs.icon} ${rs.label}</div>
+          <div style="display:flex;flex-wrap:wrap;gap:5px">${pills}</div>
+        </div>`;
+    }).join('');
+
+    return `
+    <div class="strategy-card" style="background:var(--panel);border:1px solid var(--border);border-radius:var(--r);overflow:hidden">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid var(--border);flex-wrap:wrap;gap:8px">
+        <div>
+          <div style="font-size:.95rem;font-weight:700">${s.icon} ${s.name}</div>
+          <div style="font-size:.75rem;color:var(--muted);margin-top:2px">${s.description}</div>
+        </div>
+        <div style="text-align:right;flex-shrink:0">
+          <div style="font-size:.62rem;text-transform:uppercase;color:var(--dim);margin-bottom:2px">Est. portfolio impact</div>
+          <div style="font-size:1.2rem;font-weight:800;color:${impCol}">${impStr}</div>
+        </div>
+      </div>
+      <div style="padding:14px 18px;border-bottom:1px solid var(--border)">
+        <div style="font-size:.62rem;text-transform:uppercase;letter-spacing:.08em;color:var(--dim);margin-bottom:10px">Position-by-position view <span style="font-weight:400;text-transform:none;letter-spacing:0">(hover for details)</span></div>
+        ${posRows || '<div style="color:var(--muted);font-size:.8rem">No positions to show.</div>'}
+      </div>
+      <div style="padding:12px 18px;background:var(--card);font-size:.8rem;line-height:1.7;color:var(--text)">
+        <strong>What to consider:</strong> ${s.advice}
+      </div>
+    </div>`;
+  }).join('');
+
+  document.getElementById('strategy-scenarios').innerHTML = cards;
+}
 </script>
 </body>
 </html>
