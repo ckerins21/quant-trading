@@ -1693,7 +1693,7 @@ def _quick_signal(symbol: str) -> dict:
     """Run a fast technical scan on recent data. Uses disk cache."""
     import time as _t
     end   = datetime.today().strftime("%Y-%m-%d")
-    start = (datetime.today() - timedelta(days=365)).strftime("%Y-%m-%d")
+    start = (datetime.today() - timedelta(days=400)).strftime("%Y-%m-%d")
 
     try:
         df = fetch_price_history(symbol, start, end)
@@ -1728,7 +1728,7 @@ def _quick_signal(symbol: str) -> dict:
     mom_1w  = round((price / float(close.iloc[-6])  - 1) * 100, 2) if n > 6  else 0
     mom_1m  = round((price / float(close.iloc[-22]) - 1) * 100, 2) if n > 22 else 0
     mom_3m  = round((price / float(close.iloc[-63]) - 1) * 100, 2) if n > 63 else 0
-    mom_1y  = round((price / float(close.iloc[-252])- 1) * 100, 2) if n > 252 else None
+    mom_1y  = round((price / float(close.iloc[-252])- 1) * 100, 2) if n >= 252 else None
 
     # Volatility (annualised)
     vol = round(float(df["Close"].pct_change().std()) * (252 ** 0.5) * 100, 1)
@@ -1868,6 +1868,45 @@ async def radar_scan(category: str = Query("all")):
             if "error" not in data:
                 _radar_cache[sym] = (now, data)
             results.append(data)
+
+    # Enrich every result with fundamentals — serve from _info_cache (24h TTL)
+    # or fetch fresh via yfinance. This ensures market cap, P/E, yield, beta
+    # are always populated in radar cards.
+    for r in results:
+        if "error" in r:
+            continue
+        sym = r["symbol"]
+        cached_info = _info_cache.get(sym)
+        if cached_info and now - cached_info[0] < 86400:
+            fd = cached_info[1]
+        else:
+            fd = {}
+            try:
+                info = yf.Ticker(sym).info
+                fd = {
+                    "name":           info.get("longName", sym),
+                    "sector":         info.get("sector", "—"),
+                    "industry":       info.get("industry", "—"),
+                    "market_cap":     info.get("marketCap"),
+                    "pe":             info.get("trailingPE"),
+                    "fwd_pe":         info.get("forwardPE"),
+                    "dividend_yield": info.get("dividendYield"),
+                    "beta":           info.get("beta"),
+                    "avg_volume":     info.get("averageVolume"),
+                    "description":    info.get("longBusinessSummary", "")[:500],
+                }
+                _info_cache[sym] = (now, fd)
+            except Exception:
+                pass
+        r["name"]           = fd.get("name", sym)
+        r["market_cap"]     = fd.get("market_cap")
+        r["pe"]             = fd.get("pe")
+        r["fwd_pe"]         = fd.get("fwd_pe")
+        r["dividend_yield"] = fd.get("dividend_yield")
+        r["beta"]           = fd.get("beta")
+        # Update radar cache with enriched data
+        if "error" not in r:
+            _radar_cache[sym] = (now, r)
 
     results.sort(key=lambda x: x.get("score", 0), reverse=True)
     return {

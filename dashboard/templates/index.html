@@ -2292,6 +2292,12 @@ function renderRadarGrid(results) {
 
   const pct = v => (v>=0?'+':'') + v.toFixed(1) + '%';
   const col = v => v > 0 ? 'var(--green)' : v < 0 ? 'var(--red)' : 'var(--muted)';
+  const fmtCap = v => {
+    if (!v) return '—';
+    if (v >= 1e12) return '$' + (v/1e12).toFixed(2) + 'T';
+    if (v >= 1e9)  return '$' + (v/1e9).toFixed(1) + 'B';
+    return '$' + (v/1e6).toFixed(0) + 'M';
+  };
 
   const rsiLabel = r => r < 30 ? '🟢 Oversold' : r < 45 ? '🟡 Mild low' : r > 75 ? '🔴 Overbought' : r > 60 ? '🟡 Elevated' : '⚪ Neutral';
   const trendLabel = (a50, a200, golden) => {
@@ -2355,9 +2361,9 @@ function renderRadarGrid(results) {
           <div class="radar-stat-lbl">3 Months</div>
           <div class="radar-stat-val" style="color:${col(r.mom_3m)}">${pct(r.mom_3m)}</div>
         </div>
-        <div class="radar-stat">
-          <div class="radar-stat-lbl">1 Year</div>
-          <div class="radar-stat-val" style="color:${r.mom_1y!=null?col(r.mom_1y):'var(--dim)'}">${r.mom_1y!=null?pct(r.mom_1y):'—'}</div>
+        <div class="radar-stat" style="border:1px solid ${r.mom_1y!=null?(r.mom_1y>=0?'rgba(63,185,80,.35)':'rgba(248,81,73,.35)'):'var(--border)'}">
+          <div class="radar-stat-lbl" style="color:${r.mom_1y!=null?(r.mom_1y>=0?'var(--green)':'var(--red)'):'var(--dim)'}">1 Year Growth</div>
+          <div class="radar-stat-val" style="font-size:.88rem;font-weight:800;color:${r.mom_1y!=null?col(r.mom_1y):'var(--dim)'}">${r.mom_1y!=null?pct(r.mom_1y):'—'}</div>
         </div>
         <div class="radar-stat">
           <div class="radar-stat-lbl">MACD</div>
@@ -2374,6 +2380,30 @@ function renderRadarGrid(results) {
           <div class="radar-stat-lbl">Max Drop 1Y</div>
           <div class="radar-stat-val" style="color:var(--red)">${r.mdd_1y.toFixed(0)}%</div>
           <div style="font-size:.68rem;color:var(--dim)">worst dip</div>
+        </div>
+      </div>
+
+      <!-- Company Fundamentals strip -->
+      <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:0;background:var(--card);border:1px solid var(--border);border-radius:4px;overflow:hidden">
+        <div style="padding:7px 6px;border-right:1px solid var(--border);text-align:center">
+          <div style="font-size:.58rem;text-transform:uppercase;letter-spacing:.05em;color:var(--dim);margin-bottom:3px">Mkt Cap</div>
+          <div style="font-size:.8rem;font-weight:700;color:var(--text)">${fmtCap(r.market_cap)}</div>
+        </div>
+        <div style="padding:7px 6px;border-right:1px solid var(--border);text-align:center">
+          <div style="font-size:.58rem;text-transform:uppercase;letter-spacing:.05em;color:var(--dim);margin-bottom:3px">P/E</div>
+          <div style="font-size:.8rem;font-weight:700;color:${r.pe?(r.pe<20?'var(--green)':r.pe<40?'var(--text)':'var(--red)'):'var(--dim)'}">${r.pe?r.pe.toFixed(1):'—'}</div>
+        </div>
+        <div style="padding:7px 6px;border-right:1px solid var(--border);text-align:center">
+          <div style="font-size:.58rem;text-transform:uppercase;letter-spacing:.05em;color:var(--dim);margin-bottom:3px">Fwd P/E</div>
+          <div style="font-size:.8rem;font-weight:700;color:var(--text)">${r.fwd_pe?r.fwd_pe.toFixed(1):'—'}</div>
+        </div>
+        <div style="padding:7px 6px;border-right:1px solid var(--border);text-align:center">
+          <div style="font-size:.58rem;text-transform:uppercase;letter-spacing:.05em;color:var(--dim);margin-bottom:3px">Div Yield</div>
+          <div style="font-size:.8rem;font-weight:700;color:${r.dividend_yield?'var(--green)':'var(--dim)'}">${r.dividend_yield?(r.dividend_yield*100).toFixed(2)+'%':'None'}</div>
+        </div>
+        <div style="padding:7px 6px;text-align:center">
+          <div style="font-size:.58rem;text-transform:uppercase;letter-spacing:.05em;color:var(--dim);margin-bottom:3px">Beta</div>
+          <div style="font-size:.8rem;font-weight:700;color:${r.beta?(r.beta>1.5?'var(--red)':r.beta<0.8?'var(--green)':'var(--text)'):'var(--dim)'}">${r.beta?r.beta.toFixed(2):'—'}</div>
         </div>
       </div>
 
