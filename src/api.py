@@ -1291,57 +1291,56 @@ def _yahoo_quotesummary(symbol: str, modules: str) -> dict:
 async def research_analyst(symbol: str):
     symbol = symbol.upper()
 
-    # Serve from 24-hour cache
     if symbol in _analyst_cache:
         age, data = _analyst_cache[symbol]
         if time.time() - age < 86400:
             return data
 
+    def _build_out(name, rec, n, cur, mean_t, low_t, high_t):
+        upside = round((mean_t - cur) / cur * 100, 1) if (cur and mean_t) else None
+        return {
+            "symbol": symbol, "name": name,
+            "recommendation": rec, "num_analysts": n or 0,
+            "mean_target": mean_t, "low_target": low_t, "high_target": high_t,
+            "current_price": cur, "upside_pct": upside,
+        }
+
+    # Method 1: yfinance .info — most reliable, handles auth internally
+    try:
+        info = yf.Ticker(symbol).info
+        cur    = info.get("regularMarketPrice") or info.get("currentPrice")
+        mean_t = info.get("targetMeanPrice")
+        rec    = (info.get("recommendationKey") or "—").replace("_", " ").title()
+        n      = info.get("numberOfAnalystOpinions")
+        if cur or mean_t or n:
+            out = _build_out(info.get("longName", symbol), rec, n, cur, mean_t,
+                             info.get("targetLowPrice"), info.get("targetHighPrice"))
+            _analyst_cache[symbol] = (time.time(), out)
+            return out
+    except Exception:
+        pass
+
+    # Method 2: quoteSummary with crumb auth
     try:
         result_data = _yahoo_quotesummary(symbol, "financialData,summaryDetail,price")
         fd  = result_data.get("financialData", {})
-        sd  = result_data.get("summaryDetail", {})
         pr  = result_data.get("price", {})
         cur = (fd.get("currentPrice") or {}).get("raw")
         mean_t = (fd.get("targetMeanPrice") or {}).get("raw")
-        upside = round((mean_t - cur) / cur * 100, 1) if (cur and mean_t) else None
-        rec_key = (fd.get("recommendationKey") or "—").replace("_", " ").title()
-        out = {
-            "symbol":         symbol,
-            "name":           (pr.get("longName") or pr.get("shortName") or symbol),
-            "recommendation": rec_key,
-            "num_analysts":   (fd.get("numberOfAnalystOpinions") or {}).get("raw", 0),
-            "mean_target":    mean_t,
-            "low_target":     (fd.get("targetLowPrice")  or {}).get("raw"),
-            "high_target":    (fd.get("targetHighPrice") or {}).get("raw"),
-            "current_price":  cur,
-            "upside_pct":     upside,
-        }
+        out = _build_out(
+            pr.get("longName") or pr.get("shortName") or symbol,
+            (fd.get("recommendationKey") or "—").replace("_", " ").title(),
+            (fd.get("numberOfAnalystOpinions") or {}).get("raw"),
+            cur, mean_t,
+            (fd.get("targetLowPrice")  or {}).get("raw"),
+            (fd.get("targetHighPrice") or {}).get("raw"),
+        )
         _analyst_cache[symbol] = (time.time(), out)
         return out
-    except Exception as e:
-        # Fall back to yfinance if direct API fails
-        try:
-            import time as _t; _t.sleep(1)
-            info = yf.Ticker(symbol).info
-            cur  = info.get("regularMarketPrice") or info.get("currentPrice")
-            mean_t = info.get("targetMeanPrice")
-            upside = round((mean_t - cur) / cur * 100, 1) if (cur and mean_t) else None
-            out = {
-                "symbol":         symbol,
-                "name":           info.get("longName", symbol),
-                "recommendation": (info.get("recommendationKey") or "—").replace("_", " ").title(),
-                "num_analysts":   info.get("numberOfAnalystOpinions") or 0,
-                "mean_target":    mean_t,
-                "low_target":     info.get("targetLowPrice"),
-                "high_target":    info.get("targetHighPrice"),
-                "current_price":  cur,
-                "upside_pct":     upside,
-            }
-            _analyst_cache[symbol] = (time.time(), out)
-            return out
-        except Exception as e2:
-            raise HTTPException(503, f"Analyst data temporarily unavailable — Yahoo Finance is rate-limiting. Try again in a few minutes.")
+    except Exception:
+        pass
+
+    raise HTTPException(503, "Analyst data temporarily unavailable — Yahoo Finance is rate-limiting. Try again in a few minutes.")
 
 
 @app.get("/api/research/hedgefunds")
@@ -1484,49 +1483,103 @@ async def research_news(symbol: str, count: int = Query(6)):
         raise HTTPException(400, str(e))
 
 
-def _get_calendar_events(symbol: str) -> dict:
-    """Fetch calendar events using crumb-authenticated quoteSummary."""
+def _fetch_earnings_info(symbol: str) -> dict:
+    """Return normalised earnings/dividend calendar. Tries three sources in order."""
+    result = {
+        "earnings_date": None, "eps_estimate": None,
+        "eps_low": None, "eps_high": None, "revenue_estimate": None,
+        "ex_dividend_date": None, "dividend_date": None,
+    }
+
+    ticker = yf.Ticker(symbol)
+
+    # Method 1: earnings_dates DataFrame (yfinance ≥ 0.2)
+    try:
+        import pandas as _pd
+        ed = ticker.earnings_dates
+        if ed is not None and len(ed) > 0:
+            now_utc = _pd.Timestamp.now(tz="UTC")
+            future  = ed[ed.index > now_utc].sort_index()
+            if not future.empty:
+                result["earnings_date"] = future.index[0].strftime("%Y-%m-%d")
+                eps_cols = [c for c in future.columns
+                            if "EPS" in str(c).upper() and "ESTIMATE" in str(c).upper()]
+                if eps_cols:
+                    v = future.iloc[0][eps_cols[0]]
+                    if v is not None and not _pd.isna(v):
+                        result["eps_estimate"] = f"{float(v):.2f}"
+                return result
+    except Exception:
+        pass
+
+    # Method 2: .calendar (dict in newer yfinance, DataFrame in older)
+    try:
+        import pandas as _pd
+        cal = ticker.calendar
+        if cal is not None:
+            if isinstance(cal, dict):
+                ed_val = cal.get("Earnings Date")
+                if ed_val is not None:
+                    dates = ed_val if isinstance(ed_val, list) else [ed_val]
+                    result["earnings_date"] = str(dates[0])[:10]
+                eps = cal.get("EPS Estimate")
+                if eps is not None:
+                    try: result["eps_estimate"] = f"{float(eps):.2f}"
+                    except Exception: pass
+                ex_d = cal.get("Ex-Dividend Date")
+                if ex_d: result["ex_dividend_date"] = str(ex_d)[:10]
+                div_d = cal.get("Dividend Date")
+                if div_d: result["dividend_date"] = str(div_d)[:10]
+                if result["earnings_date"]:
+                    return result
+            elif hasattr(cal, "columns"):
+                for col in cal.columns:
+                    cs = str(col)
+                    for v in cal[col]:
+                        if v is None or (hasattr(_pd, "isna") and _pd.isna(v)):
+                            continue
+                        if "Earnings Date" in cs and not result["earnings_date"]:
+                            result["earnings_date"] = str(v)[:10]
+                        elif "EPS Estimate" in cs and not result["eps_estimate"]:
+                            try: result["eps_estimate"] = f"{float(v):.2f}"
+                            except Exception: pass
+                if result["earnings_date"]:
+                    return result
+    except Exception:
+        pass
+
+    # Method 3: quoteSummary crumb auth
     try:
         data = _yahoo_quotesummary(symbol, "calendarEvents")
-        return data.get("calendarEvents", {})
+        cal  = data.get("calendarEvents", {})
+        earn = cal.get("earnings", {})
+        dates = earn.get("earningsDate", [])
+        if dates:
+            d0 = dates[0]
+            result["earnings_date"] = d0.get("fmt") if isinstance(d0, dict) else str(d0)[:10]
+        avg = earn.get("earningsAverage")
+        if avg: result["eps_estimate"]     = avg.get("fmt") if isinstance(avg, dict) else str(avg)
+        lo  = earn.get("earningsLow")
+        if lo:  result["eps_low"]          = lo.get("fmt")  if isinstance(lo,  dict) else str(lo)
+        hi  = earn.get("earningsHigh")
+        if hi:  result["eps_high"]         = hi.get("fmt")  if isinstance(hi,  dict) else str(hi)
+        rev = earn.get("revenueAverage")
+        if rev: result["revenue_estimate"] = rev.get("longFmt") if isinstance(rev, dict) else str(rev)
+        exd = cal.get("exDividendDate")
+        if exd: result["ex_dividend_date"] = exd.get("fmt") if isinstance(exd, dict) else str(exd)[:10]
+        divd = cal.get("dividendDate")
+        if divd: result["dividend_date"]   = divd.get("fmt") if isinstance(divd, dict) else str(divd)[:10]
     except Exception:
-        # Fall back to yfinance
-        try:
-            cal = yf.Ticker(symbol).calendar
-            if cal is None:
-                return {}
-            # yfinance returns a DataFrame or dict depending on version
-            if hasattr(cal, "to_dict"):
-                cal = cal.to_dict()
-            return {"_yf": cal}
-        except Exception:
-            return {}
+        pass
+
+    return result
 
 
 @app.get("/api/research/catalysts/{symbol}")
 async def research_catalysts(symbol: str):
     symbol = symbol.upper()
-    result = {
-        "symbol": symbol,
-        "earnings_date": None, "eps_estimate": None,
-        "revenue_estimate": None, "eps_low": None, "eps_high": None,
-        "ex_dividend_date": None, "dividend_date": None,
-    }
-    try:
-        cal = _get_calendar_events(symbol)
-        earn = cal.get("earnings", {})
-        dates = earn.get("earningsDate", [])
-        if dates:
-            result["earnings_date"] = dates[0].get("fmt") if isinstance(dates[0], dict) else str(dates[0])[:10]
-        result["eps_estimate"]     = (earn.get("earningsAverage") or {}).get("fmt")
-        result["eps_low"]          = (earn.get("earningsLow") or {}).get("fmt")
-        result["eps_high"]         = (earn.get("earningsHigh") or {}).get("fmt")
-        result["revenue_estimate"] = (earn.get("revenueAverage") or {}).get("longFmt")
-        result["ex_dividend_date"] = (cal.get("exDividendDate") or {}).get("fmt")
-        result["dividend_date"]    = (cal.get("dividendDate") or {}).get("fmt")
-    except Exception:
-        pass
-    return result
+    info = _fetch_earnings_info(symbol)
+    return {"symbol": symbol, **info}
 
 
 @app.get("/api/research/earnings")
@@ -1535,24 +1588,15 @@ async def research_earnings(symbols: str = Query("")):
     if not sym_list:
         raise HTTPException(400, "Provide symbols as comma-separated query param")
 
-    # Check cache
     uncached = [s for s in sym_list if s not in _earnings_cache or
                 time.time() - _earnings_cache[s][0] > 86400]
 
     for sym in uncached:
         try:
-            cal = _get_calendar_events(sym)
-            earn = cal.get("earnings", {})
-            dates = earn.get("earningsDate", [])
-            ed = None
-            if dates:
-                d0 = dates[0]
-                ed = d0.get("fmt") if isinstance(d0, dict) else str(d0)[:10]
-            _earnings_cache[sym] = (time.time(), {
-                "symbol":        sym,
-                "earnings_date": ed,
-                "eps_estimate":  (earn.get("earningsAverage") or {}).get("fmt"),
-            })
+            info = _fetch_earnings_info(sym)
+            _earnings_cache[sym] = (time.time(), {"symbol": sym,
+                                                   "earnings_date": info["earnings_date"],
+                                                   "eps_estimate":  info["eps_estimate"]})
         except Exception:
             _earnings_cache[sym] = (time.time(), {"symbol": sym, "earnings_date": None})
 

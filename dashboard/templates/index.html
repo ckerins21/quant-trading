@@ -1490,7 +1490,7 @@ function renderPortfolio(data) {
       <td>
         <div style="position:relative;display:inline-block">
           <span style="font-weight:700;cursor:pointer;color:var(--accent);border-bottom:1px dashed var(--accent)"
-            onclick="toggleSymMenu('${p.symbol}')">${p.symbol} ▾</span>
+            onclick="toggleSymMenu('${p.symbol}', event)">${p.symbol} ▾</span>
           <div id="sym-menu-${p.symbol}" style="display:none;position:absolute;top:100%;left:0;z-index:50;
             background:var(--panel);border:1px solid var(--border);border-radius:var(--r);
             min-width:160px;box-shadow:0 8px 24px rgba(0,0,0,.5);margin-top:4px">
@@ -1634,13 +1634,24 @@ function goToPortfolioStock(sym) {
   }, 400);
 }
 
-function toggleSymMenu(sym) {
-  // Close any other open menus first
-  document.querySelectorAll('[id^="sym-menu-"]').forEach(el => {
-    if (el.id !== `sym-menu-${sym}`) el.style.display = 'none';
-  });
+function toggleSymMenu(sym, e) {
   const m = document.getElementById(`sym-menu-${sym}`);
-  if (m) m.style.display = m.style.display === 'none' ? 'block' : 'none';
+  const isOpen = m && m.style.display === 'block';
+  // Close all open menus
+  document.querySelectorAll('[id^="sym-menu-"]').forEach(el => el.style.display = 'none');
+  if (isOpen || !m) return;
+
+  // Use fixed positioning so the menu escapes the overflow:auto container
+  const rect = (e && e.currentTarget ? e.currentTarget : e && e.target ? e.target : document.body).getBoundingClientRect();
+  Object.assign(m.style, {
+    position: 'fixed',
+    top:  (rect.bottom + 4) + 'px',
+    left: rect.left + 'px',
+    zIndex: '9999',
+    display: 'block',
+  });
+  // Append to body so no parent overflow can clip it
+  document.body.appendChild(m);
 }
 
 // Close menus when clicking elsewhere
