@@ -2231,3 +2231,309 @@ async def portfolio_scenario():
         "etf_pct":       round(etf_pct, 1),
         "scenarios":     scenarios,
     }
+
+
+# ── Sentiment & Trends Analysis ────────────────────────────────────────────────
+
+_PRODUCT_TERMS: dict = {
+    "NVDA":  ["nvidia gpu", "buy rtx gpu", "ai accelerator chip"],
+    "AAPL":  ["buy iphone", "apple iphone 16", "macbook pro new"],
+    "MSFT":  ["microsoft copilot", "github copilot", "azure ai"],
+    "GOOGL": ["google search ads", "youtube premium", "google workspace"],
+    "AMZN":  ["amazon prime membership", "amazon delivery", "aws cloud"],
+    "META":  ["facebook ads", "instagram shopping", "meta quest headset"],
+    "TSLA":  ["buy tesla car", "tesla model y", "tesla cybertruck"],
+    "NKE":   ["buy nike shoes", "nike air max", "nike running"],
+    "CROX":  ["buy crocs", "crocs clog", "crocs shoes"],
+    "SBUX":  ["starbucks order", "starbucks new drink", "starbucks reward"],
+    "MCD":   ["mcdonalds delivery", "mcdonalds new menu", "big mac"],
+    "COST":  ["costco membership", "costco deals", "costco shopping"],
+    "WMT":   ["walmart grocery delivery", "walmart plus"],
+    "DIS":   ["disney plus subscription", "disney world ticket", "disneyland"],
+    "NFLX":  ["netflix new show", "netflix subscription", "netflix series"],
+    "UBER":  ["uber ride", "uber eats order", "uber discount"],
+    "COIN":  ["coinbase buy crypto", "coinbase app", "buy bitcoin coinbase"],
+    "PLTR":  ["palantir ai software", "palantir government"],
+    "AMD":   ["amd ryzen cpu", "amd rx gpu", "amd vs nvidia"],
+    "INTC":  ["intel processor", "intel core ultra", "intel chip"],
+    "SMCI":  ["supermicro ai server", "supermicro gpu rack"],
+    "CRWD":  ["crowdstrike security", "crowdstrike falcon"],
+    "NET":   ["cloudflare cdn", "cloudflare ddos"],
+    "SOFI":  ["sofi bank account", "sofi student loan"],
+    "IONQ":  ["quantum computer cloud", "quantum computing service"],
+    "OKLO":  ["small nuclear reactor", "nuclear microreactor"],
+    "ACHR":  ["electric air taxi", "evtol aircraft"],
+    "RKLB":  ["rocket lab launch", "neutron rocket"],
+    "NEM":   ["buy gold bars", "gold price today"],
+    "GOLD":  ["buy gold investment", "gold etf"],
+    "SPY":   ["sp500 index fund", "passive investing etf"],
+    "QQQ":   ["nasdaq 100 etf", "tech stocks etf"],
+    "SMH":   ["semiconductor etf", "chip stocks buy"],
+}
+
+_POS_WORDS = {
+    "surge","rally","beat","record","growth","bullish","gain","strong","positive",
+    "outperform","exceeded","higher","rise","soar","breakthrough","profit","revenue",
+    "expand","innovative","demand","popular","viral","trending","hot","launch",
+    "success","boom","upgrade","buy","love","great","amazing","best",
+}
+_NEG_WORDS = {
+    "crash","drop","miss","decline","bearish","loss","warning","fail","weak",
+    "concern","risk","recession","lawsuit","investigation","layoff","cut",
+    "disappoint","sell","lower","plunge","downgrade","scandal","fraud","recall",
+    "shortage","ban","regulation","penalty","slump","tumble","fear","short",
+}
+
+
+def _google_trends_data(symbol: str, extra_terms: list) -> dict:
+    try:
+        from pytrends.request import TrendReq
+    except ImportError:
+        return {"error": "pytrends not installed"}
+
+    try:
+        pt = TrendReq(hl="en-US", tz=0, timeout=(8, 30), retries=2, backoff_factor=0.5)
+        product_list = extra_terms + _PRODUCT_TERMS.get(symbol, [])
+        all_terms = list(dict.fromkeys([symbol] + product_list))[:5]
+
+        pt.build_payload(all_terms, timeframe="today 12-m")
+        df = pt.interest_over_time()
+        if df.empty:
+            return {"error": "No trend data from Google Trends"}
+        df = df.drop(columns=["isPartial"], errors="ignore")
+
+        series = {}
+        for term in all_terms:
+            if term not in df.columns:
+                continue
+            vals = df[term].tolist()
+            avg = round(sum(vals) / len(vals), 1) if vals else 0
+            recent  = sum(vals[-4:]) / 4 if len(vals) >= 4 else (vals[-1] if vals else 0)
+            prev    = sum(vals[-8:-4]) / 4 if len(vals) >= 8 else avg
+            trend_p = round((recent - prev) / prev * 100, 1) if prev > 0 else 0
+            series[term] = {
+                "values":    vals,
+                "avg":       avg,
+                "current":   vals[-1] if vals else 0,
+                "peak":      max(vals) if vals else 0,
+                "trend_pct": trend_p,
+                "trending":  "up" if trend_p > 5 else "down" if trend_p < -5 else "flat",
+            }
+
+        # Rising queries for the primary product term
+        rising = []
+        primary = product_list[0] if product_list else symbol
+        try:
+            pt.build_payload([primary], timeframe="today 12-m")
+            rel = pt.related_queries()
+            rdf = (rel.get(primary) or {}).get("rising")
+            if rdf is not None and not rdf.empty:
+                rising = [{"query": r["query"], "value": str(r["value"])}
+                          for _, r in rdf.head(8).iterrows()]
+        except Exception:
+            pass
+
+        return {
+            "terms": all_terms,
+            "dates": df.index.strftime("%Y-%m-%d").tolist(),
+            "series": series,
+            "rising_queries": rising,
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _reddit_mentions(symbol: str) -> dict:
+    headers = {"User-Agent": "QuantDash/1.0"}
+    posts, seen = [], set()
+    for sub in ["stocks", "investing", "wallstreetbets", "stockmarket"]:
+        try:
+            r = _requests.get(
+                f"https://www.reddit.com/r/{sub}/search.json",
+                params={"q": symbol, "sort": "new", "limit": 10, "t": "week"},
+                headers=headers, timeout=8,
+            )
+            if not r.ok:
+                continue
+            for child in r.json().get("data", {}).get("children", []):
+                p = child.get("data", {})
+                url = p.get("url", "")
+                if url in seen:
+                    continue
+                seen.add(url)
+                title = p.get("title", "")
+                tl = title.lower()
+                pos = sum(1 for w in _POS_WORDS if w in tl)
+                neg = sum(1 for w in _NEG_WORDS if w in tl)
+                posts.append({
+                    "title":     title,
+                    "score":     p.get("score", 0),
+                    "comments":  p.get("num_comments", 0),
+                    "url":       f"https://reddit.com{p.get('permalink', '')}",
+                    "subreddit": p.get("subreddit", sub),
+                    "sentiment": "positive" if pos > neg else "negative" if neg > pos else "neutral",
+                })
+        except Exception:
+            continue
+
+    if not posts:
+        return {"error": "No Reddit posts found", "posts": [], "sentiment_label": "Unknown", "sentiment_score": 0.5, "post_count": 0}
+
+    pos_c = sum(1 for p in posts if p["sentiment"] == "positive")
+    score = pos_c / len(posts)
+    return {
+        "post_count": len(posts),
+        "sentiment_score": round(score, 2),
+        "sentiment_label": "Bullish" if score > 0.6 else "Bearish" if score < 0.4 else "Mixed",
+        "posts": sorted(posts, key=lambda x: x["score"], reverse=True)[:6],
+    }
+
+
+def _news_sentiment_rss(symbol: str) -> dict:
+    try:
+        url = f"https://news.google.com/rss/search?q={symbol}+stock&hl=en-US&gl=US&ceid=US:en"
+        r = _requests.get(url, timeout=10, headers=_PRICE_HEADERS)
+        root = ET.fromstring(r.content)
+        articles = []
+        for item in root.findall(".//item")[:12]:
+            title = (item.findtext("title") or "").strip()
+            tl = title.lower()
+            pos = sum(1 for w in _POS_WORDS if w in tl)
+            neg = sum(1 for w in _NEG_WORDS if w in tl)
+            articles.append({
+                "title":     title,
+                "link":      (item.findtext("link") or "").strip(),
+                "date":      (item.findtext("pubDate") or "")[:22].strip(),
+                "sentiment": "positive" if pos > neg else "negative" if neg > pos else "neutral",
+            })
+        pos_c = sum(1 for a in articles if a["sentiment"] == "positive")
+        neg_c = sum(1 for a in articles if a["sentiment"] == "negative")
+        total = len(articles)
+        score = pos_c / total if total else 0.5
+        return {
+            "article_count":   total,
+            "positive_count":  pos_c,
+            "negative_count":  neg_c,
+            "neutral_count":   total - pos_c - neg_c,
+            "sentiment_score": round(score, 2),
+            "sentiment_label": "Bullish" if score > 0.6 else "Bearish" if score < 0.4 else "Mixed",
+            "articles":        articles,
+        }
+    except Exception as e:
+        return {"error": str(e), "articles": [], "sentiment_label": "Unknown", "sentiment_score": 0.5}
+
+
+def _claude_scan(symbol: str, company_name: str) -> dict:
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        return {"available": False}
+    try:
+        from anthropic import Anthropic
+        client = Anthropic(api_key=api_key)
+        prompt = (
+            f"You are a market intelligence analyst. Search the internet and analyse current sentiment for "
+            f"{symbol} ({company_name}).\n\n"
+            f"Search for: recent Reddit discussions about {symbol}, recent news about {company_name}, "
+            f"and product demand signals — e.g. are people searching for or buying {company_name}'s products? "
+            f"Any viral trends, Google Trends spikes, social media momentum?\n\n"
+            f"Return a clear structured analysis:\n"
+            f"OVERALL SENTIMENT: [Bullish/Bearish/Neutral] (confidence %)\n"
+            f"KEY SIGNALS: 3 bullet points of what is driving sentiment right now\n"
+            f"WHAT THE INTERNET IS SAYING: Key themes from Reddit, Twitter/X, forums\n"
+            f"PRODUCT DEMAND SIGNALS: Real-world consumer demand evidence (search trends, reviews, viral moments)\n"
+            f"EARNINGS IMPLICATION: What product trends suggest for the next earnings report\n"
+            f"RED FLAGS: Any negative signals worth monitoring\n\n"
+            f"Be specific, cite what you found, keep it concise and actionable for an investor."
+        )
+        response = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=1400,
+            tools=[{"type": "web_search_20250305", "name": "web_search"}],
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = next((b.text for b in response.content if hasattr(b, "text")), "")
+        return {"available": True, "analysis": text}
+    except Exception as e:
+        return {"available": False, "error": str(e)}
+
+
+_sentiment_cache: dict = {}  # 1-hour TTL per symbol
+
+
+@app.get("/api/sentiment/{symbol}")
+async def get_sentiment(symbol: str, product: str = Query(None), fresh: bool = Query(False)):
+    symbol = symbol.upper()
+    cache_key = f"{symbol}:{product or ''}"
+
+    if not fresh and cache_key in _sentiment_cache:
+        age, data = _sentiment_cache[cache_key]
+        if time.time() - age < 3600:
+            return data
+
+    extra = [product] if product else []
+    cached_info = _info_cache.get(symbol)
+    company_name = cached_info[1].get("name", symbol) if cached_info else symbol
+
+    trends = _google_trends_data(symbol, extra)
+    reddit = _reddit_mentions(symbol)
+    news   = _news_sentiment_rss(symbol)
+    claude = _claude_scan(symbol, company_name)
+
+    scores = [s for s in [reddit.get("sentiment_score"), news.get("sentiment_score")] if s is not None]
+    combined = round(sum(scores) / len(scores), 2) if scores else 0.5
+
+    result = {
+        "symbol":        symbol,
+        "company_name":  company_name,
+        "combined_score": combined,
+        "combined_label": "Bullish" if combined > 0.6 else "Bearish" if combined < 0.4 else "Mixed",
+        "trends":  trends,
+        "reddit":  reddit,
+        "news":    news,
+        "claude":  claude,
+        "product_suggestions": _PRODUCT_TERMS.get(symbol, []),
+    }
+
+    _sentiment_cache[cache_key] = (time.time(), result)
+    return result
+
+
+@app.get("/api/sentiment/product/search")
+async def product_trend_search(term: str = Query(...)):
+    """Pure product Google Trends search — spot demand before it hits earnings."""
+    try:
+        from pytrends.request import TrendReq
+        pt = TrendReq(hl="en-US", tz=0, timeout=(8, 30), retries=2, backoff_factor=0.5)
+        pt.build_payload([term], timeframe="today 12-m")
+        df = pt.interest_over_time()
+        if df.empty:
+            return {"error": "No data found for that term", "term": term}
+        df = df.drop(columns=["isPartial"], errors="ignore")
+        vals = df[term].tolist() if term in df.columns else []
+        rising = []
+        try:
+            rel = pt.related_queries()
+            rdf = (rel.get(term) or {}).get("rising")
+            if rdf is not None and not rdf.empty:
+                rising = [{"query": r["query"], "value": str(r["value"])} for _, r in rdf.head(10).iterrows()]
+        except Exception:
+            pass
+        avg = round(sum(vals) / len(vals), 1) if vals else 0
+        recent  = sum(vals[-4:]) / 4 if len(vals) >= 4 else (vals[-1] if vals else 0)
+        prev    = sum(vals[-8:-4]) / 4 if len(vals) >= 8 else avg
+        trend_p = round((recent - prev) / prev * 100, 1) if prev > 0 else 0
+        return {
+            "term": term,
+            "dates": df.index.strftime("%Y-%m-%d").tolist(),
+            "values": vals,
+            "peak": max(vals) if vals else 0,
+            "current": vals[-1] if vals else 0,
+            "avg": avg,
+            "trend_pct": trend_p,
+            "trending": "up" if trend_p > 5 else "down" if trend_p < -5 else "flat",
+            "rising_queries": rising,
+        }
+    except ImportError:
+        return {"error": "pytrends not installed — run: pip install pytrends"}
+    except Exception as e:
+        return {"error": str(e), "term": term}

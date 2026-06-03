@@ -435,6 +435,7 @@ tbody tr:hover td{background:rgba(88,166,255,.03)}
   <button class="tab"     data-tab="watchlist">👁️ Watchlist</button>
   <button class="tab"     data-tab="research">🔬 Research</button>
   <button class="tab"     data-tab="strategy">🛡️ Strategy</button>
+  <button class="tab"     data-tab="sentiment">📡 Trends</button>
 </nav>
 
 <!-- PANELS -->
@@ -921,6 +922,63 @@ tbody tr:hover td{background:rgba(88,166,255,.03)}
   </div>
 </div><!-- /strategy -->
 
+<!-- ══ SENTIMENT / TRENDS PANEL ══════════════════════════════════════════ -->
+<div class="panel" id="p-sentiment">
+  <div style="flex:1;overflow-y:auto">
+    <div style="padding:20px;max-width:1100px;width:100%;margin:0 auto">
+
+      <!-- Search bar -->
+      <div style="background:var(--panel);border:1px solid var(--border);border-radius:var(--r);padding:18px 20px;margin-bottom:18px">
+        <div style="font-size:1rem;font-weight:700;margin-bottom:4px">📡 Trends &amp; Sentiment Scanner</div>
+        <div style="font-size:.76rem;color:var(--muted);margin-bottom:14px">Scan Google Trends, Reddit and news for a stock. Add a product keyword to spot consumer demand before it hits earnings — like "buy crocs shoes" before Crocs' breakout quarter.</div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px">
+          <div style="flex:0 0 auto">
+            <div style="font-size:.68rem;color:var(--dim);margin-bottom:4px">Stock Symbol</div>
+            <input id="sent-sym" placeholder="e.g. NVDA" autocomplete="off" spellcheck="false"
+              style="width:120px;padding:8px 12px;background:var(--card);border:1px solid var(--border);border-radius:var(--r);color:var(--text);font-size:.9rem;outline:none">
+          </div>
+          <div style="flex:1;min-width:180px">
+            <div style="font-size:.68rem;color:var(--dim);margin-bottom:4px">Custom product keyword <span style="color:var(--dim);font-weight:400">(optional — e.g. "buy crocs shoes")</span></div>
+            <input id="sent-product" placeholder="e.g. buy nike shoes" autocomplete="off" spellcheck="false"
+              style="width:100%;padding:8px 12px;background:var(--card);border:1px solid var(--border);border-radius:var(--r);color:var(--text);font-size:.9rem;outline:none">
+          </div>
+          <button id="sent-scan-btn" class="btn btn-primary" style="white-space:nowrap">🔍 Scan</button>
+          <button id="sent-fresh-btn" class="btn btn-ghost" style="white-space:nowrap">↻ Fresh Scan</button>
+        </div>
+        <!-- Quick picks -->
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <span style="font-size:.72rem;color:var(--dim);align-self:center">Quick:</span>
+          <div class="qp" data-sent="NVDA">NVDA</div>
+          <div class="qp" data-sent="AAPL">AAPL</div>
+          <div class="qp" data-sent="CROX">CROX 🥿</div>
+          <div class="qp" data-sent="NKE">NKE</div>
+          <div class="qp" data-sent="TSLA">TSLA</div>
+          <div class="qp" data-sent="META">META</div>
+          <div class="qp" data-sent="AMZN">AMZN</div>
+          <div class="qp" data-sent="COIN">COIN</div>
+        </div>
+      </div>
+
+      <!-- Also: pure product search -->
+      <div style="background:var(--panel);border:1px solid var(--border);border-radius:var(--r);padding:14px 18px;margin-bottom:18px">
+        <div style="font-size:.72rem;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--dim);margin-bottom:10px">🛍️ Product-Only Trend Search</div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <input id="sent-prod-only" placeholder="e.g. buy crocs shoes" autocomplete="off" spellcheck="false"
+            style="flex:1;min-width:200px;padding:7px 12px;background:var(--card);border:1px solid var(--border);border-radius:var(--r);color:var(--text);font-size:.84rem;outline:none">
+          <button id="sent-prod-btn" class="btn btn-ghost">📈 Get Trend</button>
+        </div>
+        <div id="sent-prod-result" style="margin-top:12px"></div>
+      </div>
+
+      <!-- Results -->
+      <div id="sent-results" style="display:flex;flex-direction:column;gap:14px">
+        <div style="color:var(--muted);font-size:.84rem;padding:32px;text-align:center">Enter a stock symbol above and click Scan.</div>
+      </div>
+
+    </div>
+  </div>
+</div><!-- /sentiment -->
+
 </div><!-- /panels -->
 </div><!-- /app -->
 
@@ -1047,6 +1105,7 @@ function initTabs() {
       if (tab.dataset.tab === 'watchlist') loadWatchlistTab();
       if (tab.dataset.tab === 'radar') loadRadar();
       if (tab.dataset.tab === 'strategy') loadPortfolioStrategy();
+      if (tab.dataset.tab === 'sentiment') initSentimentTab();
     });
   });
 }
@@ -2753,6 +2812,277 @@ function status(type, msg) {
 
 function openModal(id)  { document.getElementById(id).classList.add('on'); }
 function closeModal(id) { document.getElementById(id).classList.remove('on'); }
+
+// ══ SENTIMENT / TRENDS ══════════════════════════════════════
+let _sentInited = false;
+function initSentimentTab() {
+  if (_sentInited) return;
+  _sentInited = true;
+
+  const symEl  = document.getElementById('sent-sym');
+  const prdEl  = document.getElementById('sent-product');
+  const scanBtn = document.getElementById('sent-scan-btn');
+  const freshBtn= document.getElementById('sent-fresh-btn');
+
+  symEl.addEventListener('input', () => { symEl.value = symEl.value.toUpperCase().replace(/[^A-Z0-9.\-^]/g,''); });
+  symEl.addEventListener('keydown', e => { if (e.key==='Enter') runSentimentScan(false); });
+  scanBtn.addEventListener('click', () => runSentimentScan(false));
+  freshBtn.addEventListener('click', () => runSentimentScan(true));
+
+  document.querySelectorAll('.qp[data-sent]').forEach(btn => {
+    btn.addEventListener('click', () => { symEl.value = btn.dataset.sent; runSentimentScan(false); });
+  });
+
+  document.getElementById('sent-prod-btn').addEventListener('click', runProductTrend);
+  document.getElementById('sent-prod-only').addEventListener('keydown', e => { if (e.key==='Enter') runProductTrend(); });
+}
+
+async function runSentimentScan(fresh = false) {
+  const sym  = document.getElementById('sent-sym').value.trim();
+  const prod = document.getElementById('sent-product').value.trim();
+  if (!sym) return;
+
+  const el = document.getElementById('sent-results');
+  el.innerHTML = `<div style="padding:40px;text-align:center"><div class="spin" style="margin:auto"></div>
+    <div style="margin-top:14px;color:var(--muted);font-size:.82rem">
+      Scanning Google Trends, Reddit, news${document.title||''?'':', and Claude AI'}…
+      <br><span style="font-size:.74rem;color:var(--dim)">First scan takes 15–30 seconds · results cached 1 hour</span>
+    </div></div>`;
+
+  try {
+    const qs = new URLSearchParams({...(prod?{product:prod}:{}), fresh});
+    const r = await fetch(`/api/sentiment/${sym}?${qs}`);
+    if (!r.ok) throw new Error((await r.json()).detail || 'Failed');
+    renderSentiment(await r.json());
+  } catch(e) {
+    el.innerHTML = `<div style="padding:24px;color:var(--red)">⚠️ ${e.message}</div>`;
+  }
+}
+
+async function runProductTrend() {
+  const term = document.getElementById('sent-prod-only').value.trim();
+  if (!term) return;
+  const el = document.getElementById('sent-prod-result');
+  el.innerHTML = `<div class="spin" style="margin:auto;margin-top:8px"></div>`;
+  try {
+    const r = await fetch(`/api/sentiment/product/search?term=${encodeURIComponent(term)}`);
+    const d = await r.json();
+    if (d.error) { el.innerHTML = `<div style="color:var(--red);font-size:.8rem">⚠️ ${d.error}</div>`; return; }
+    renderProductTrendInline(el, d);
+  } catch(e) {
+    el.innerHTML = `<div style="color:var(--red);font-size:.8rem">⚠️ ${e.message}</div>`;
+  }
+}
+
+function renderProductTrendInline(el, d) {
+  const tCol = d.trend_pct >= 10 ? 'var(--green)' : d.trend_pct <= -10 ? 'var(--red)' : 'var(--yellow)';
+  const risingHTML = d.rising_queries.length ? `
+    <div style="margin-top:10px">
+      <div style="font-size:.65rem;text-transform:uppercase;letter-spacing:.08em;color:var(--dim);margin-bottom:6px">🚀 Rising Breakout Queries</div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px">
+        ${d.rising_queries.map(q=>`<span style="padding:3px 9px;border-radius:10px;font-size:.74rem;background:rgba(63,185,80,.1);border:1px solid rgba(63,185,80,.3);color:var(--green)">
+          ${q.query} <strong>${q.value.replace('Breakout','🔥')}</strong></span>`).join('')}
+      </div>
+    </div>` : '';
+
+  el.innerHTML = `
+    <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:8px">
+      <div style="font-size:.88rem;font-weight:700">"${d.term}"</div>
+      <div style="font-size:.82rem;color:var(--muted)">Current interest: <strong style="color:${d.current>50?'var(--green)':'var(--text)'}">${d.current}/100</strong></div>
+      <div style="font-size:.82rem;color:var(--muted)">Peak: <strong>${d.peak}/100</strong></div>
+      <div style="font-size:.82rem">4-week trend: <strong style="color:${tCol}">${d.trend_pct>=0?'+':''}${d.trend_pct}%</strong></div>
+    </div>
+    ${renderMiniTrendChart('prod-inline-chart', d.dates, [d], ['#58a6ff'])}
+    ${risingHTML}`;
+
+  Plotly.newPlot('prod-inline-chart', [{
+    x: d.dates, y: d.values, type: 'scatter', mode: 'lines',
+    fill: 'tozeroy', fillcolor: 'rgba(88,166,255,0.08)',
+    line: {color:'#58a6ff', width:2}, hovertemplate: '%{y}/100<extra></extra>',
+  }], {
+    template:'plotly_dark', paper_bgcolor:'#161b22', plot_bgcolor:'#161b22',
+    margin:{l:35,r:10,t:10,b:30}, height:140, showlegend:false,
+    xaxis:{gridcolor:'#21262d'}, yaxis:{gridcolor:'#21262d',range:[0,105]},
+    font:{color:'#c9d1d9',size:10},
+  }, {responsive:true, displayModeBar:false});
+}
+
+function renderMiniTrendChart(id, dates, seriesList, colors) {
+  return `<div id="${id}" style="height:150px;margin:8px 0"></div>`;
+}
+
+function renderSentiment(d) {
+  const colScore = s => s > 0.6 ? 'var(--green)' : s < 0.4 ? 'var(--red)' : 'var(--yellow)';
+  const labelIco = l => l==='Bullish'?'🟢':l==='Bearish'?'🔴':'🟡';
+
+  // ① Overall sentiment header
+  const overall = `
+  <div style="background:var(--panel);border:1px solid var(--border);border-radius:var(--r);padding:18px 20px">
+    <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+      <div>
+        <div style="font-size:.65rem;text-transform:uppercase;letter-spacing:.08em;color:var(--dim);margin-bottom:4px">${d.symbol} — ${d.company_name}</div>
+        <div style="font-size:1.4rem;font-weight:800;color:${colScore(d.combined_score)}">${labelIco(d.combined_label)} ${d.combined_label}</div>
+        <div style="font-size:.78rem;color:var(--muted);margin-top:3px">Combined news + Reddit sentiment · ${Math.round(d.combined_score*100)}% positive signals</div>
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-left:auto">
+        <div style="text-align:center;padding:8px 14px;background:var(--card);border:1px solid var(--border);border-radius:var(--r)">
+          <div style="font-size:.6rem;text-transform:uppercase;color:var(--dim);margin-bottom:2px">Reddit</div>
+          <div style="font-size:.88rem;font-weight:700;color:${colScore(d.reddit.sentiment_score||0.5)}">${d.reddit.sentiment_label||'—'}</div>
+          <div style="font-size:.68rem;color:var(--dim)">${d.reddit.post_count||0} posts</div>
+        </div>
+        <div style="text-align:center;padding:8px 14px;background:var(--card);border:1px solid var(--border);border-radius:var(--r)">
+          <div style="font-size:.6rem;text-transform:uppercase;color:var(--dim);margin-bottom:2px">News</div>
+          <div style="font-size:.88rem;font-weight:700;color:${colScore(d.news.sentiment_score||0.5)}">${d.news.sentiment_label||'—'}</div>
+          <div style="font-size:.68rem;color:var(--dim)">${d.news.article_count||0} articles</div>
+        </div>
+        ${d.product_suggestions.length ? `
+        <div style="padding:8px 14px;background:var(--card);border:1px solid var(--border);border-radius:var(--r)">
+          <div style="font-size:.6rem;text-transform:uppercase;color:var(--dim);margin-bottom:4px">Product terms used</div>
+          <div style="display:flex;flex-wrap:wrap;gap:4px">
+            ${d.product_suggestions.slice(0,3).map(t=>`<span style="font-size:.7rem;padding:2px 6px;background:rgba(88,166,255,.1);border-radius:4px;color:var(--accent)">${t}</span>`).join('')}
+          </div>
+        </div>` : ''}
+      </div>
+    </div>
+  </div>`;
+
+  // ② Claude AI analysis (if available)
+  const claude = d.claude.available ? `
+  <div style="background:rgba(163,113,247,.07);border:1px solid rgba(163,113,247,.3);border-radius:var(--r);padding:18px 20px">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+      <span style="font-size:.9rem">🤖</span>
+      <span style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.09em;color:var(--purple)">Claude AI — Internet Sentiment Scan</span>
+      <span style="font-size:.66rem;color:var(--dim);margin-left:auto">Searched the web in real time</span>
+    </div>
+    <div style="font-size:.83rem;line-height:1.75;color:var(--text);white-space:pre-wrap">${d.claude.analysis}</div>
+  </div>` : (!d.claude.error ? `
+  <div style="background:var(--panel);border:1px dashed var(--border);border-radius:var(--r);padding:16px 20px;text-align:center">
+    <div style="font-size:.84rem;color:var(--muted)">🤖 <strong>Add Claude AI for deeper analysis</strong></div>
+    <div style="font-size:.76rem;color:var(--dim);margin-top:6px">Set <code style="background:var(--card);padding:1px 6px;border-radius:3px">ANTHROPIC_API_KEY</code> as an environment variable before starting the server — Claude will then search the internet and provide a full AI narrative including product demand insights.</div>
+  </div>` : `
+  <div style="background:var(--panel);border:1px solid var(--border);border-radius:var(--r);padding:12px 16px;font-size:.78rem;color:var(--red)">
+    🤖 Claude error: ${d.claude.error}
+  </div>`);
+
+  // ③ Google Trends chart + rising queries
+  const trendsSection = d.trends.error ? `
+  <div style="background:var(--panel);border:1px solid var(--border);border-radius:var(--r);padding:16px 20px;color:var(--muted);font-size:.82rem">
+    📈 Google Trends unavailable: ${d.trends.error}
+  </div>` : (() => {
+    const terms   = d.trends.terms || [];
+    const series  = d.trends.series || {};
+    const colors  = ['#58a6ff','#3fb950','#e3b341','#a371f7','#f85149'];
+    const trendPctStr = s => {
+      const v = series[s]?.trend_pct;
+      return v != null ? `<span style="color:${v>=5?'var(--green)':v<=-5?'var(--red)':'var(--muted)'};font-size:.72rem">${v>=0?'+':''}${v}% 4-wk</span>` : '';
+    };
+
+    const rising = d.trends.rising_queries || [];
+    const risingHTML = rising.length ? `
+    <div style="margin-top:14px">
+      <div style="font-size:.65rem;text-transform:uppercase;letter-spacing:.08em;color:var(--dim);margin-bottom:8px">🚀 Rising Breakout Searches — these are growing fastest</div>
+      <div style="display:flex;flex-wrap:wrap;gap:7px">
+        ${rising.map(q=>{
+          const isBreak = q.value==='Breakout';
+          return `<div style="padding:5px 12px;border-radius:20px;font-size:.76rem;
+            background:${isBreak?'rgba(63,185,80,.15)':'rgba(88,166,255,.1)'};
+            border:1px solid ${isBreak?'rgba(63,185,80,.4)':'rgba(88,166,255,.3)'};
+            color:${isBreak?'var(--green)':'var(--accent)'}">
+            ${q.query} <strong>${q.value.replace('Breakout','🔥 BREAKOUT')}</strong>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>` : '';
+
+    const legend = terms.map((t,i)=>`
+      <div style="display:flex;align-items:center;gap:6px;font-size:.75rem">
+        <div style="width:12px;height:3px;border-radius:2px;background:${colors[i%colors.length]}"></div>
+        <span style="color:var(--text)">${t}</span>
+        ${trendPctStr(t)}
+      </div>`).join('');
+
+    return `
+    <div style="background:var(--panel);border:1px solid var(--border);border-radius:var(--r);padding:18px 20px">
+      <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.09em;color:var(--dim);margin-bottom:10px">📈 Google Search Trends — last 12 months (100 = peak popularity)</div>
+      <div id="sent-trends-chart" style="height:200px"></div>
+      <div style="display:flex;flex-wrap:wrap;gap:12px;margin-top:8px">${legend}</div>
+      ${risingHTML}
+    </div>`;
+  })();
+
+  // ④ Reddit
+  const redditPosts = (d.reddit.posts || []).map(p=>`
+    <a href="${p.url}" target="_blank" style="display:block;text-decoration:none;padding:9px 0;border-bottom:1px solid rgba(255,255,255,.06)">
+      <div style="display:flex;align-items:flex-start;gap:8px">
+        <span style="font-size:.7rem;padding:2px 6px;border-radius:4px;flex-shrink:0;margin-top:1px;
+          background:${p.sentiment==='positive'?'rgba(63,185,80,.15)':p.sentiment==='negative'?'rgba(248,81,73,.15)':'rgba(139,148,158,.1)'};
+          color:${p.sentiment==='positive'?'var(--green)':p.sentiment==='negative'?'var(--red)':'var(--muted)'}">
+          ${p.sentiment==='positive'?'🟢':'negative'===p.sentiment?'🔴':'⚪'}
+        </span>
+        <div style="flex:1;min-width:0">
+          <div style="font-size:.82rem;color:var(--text);line-height:1.4">${p.title}</div>
+          <div style="font-size:.68rem;color:var(--dim);margin-top:3px">r/${p.subreddit} · 🔺${p.score} · 💬${p.comments}</div>
+        </div>
+      </div>
+    </a>`).join('') || '<div style="color:var(--muted);font-size:.8rem">No Reddit posts found this week.</div>';
+
+  const reddit = `
+  <div style="background:var(--panel);border:1px solid var(--border);border-radius:var(--r);padding:18px 20px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+      <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.09em;color:var(--dim)">👥 Reddit Sentiment — this week</div>
+      <div style="display:flex;align-items:center;gap:10px">
+        <div style="font-size:.82rem;font-weight:700;color:${colScore(d.reddit.sentiment_score||0.5)}">${labelIco(d.reddit.sentiment_label||'Mixed')} ${d.reddit.sentiment_label||'—'}</div>
+        <div style="font-size:.72rem;color:var(--dim)">${d.reddit.post_count||0} posts</div>
+      </div>
+    </div>
+    <div style="height:6px;border-radius:3px;background:var(--card);overflow:hidden;margin-bottom:14px">
+      <div style="height:100%;border-radius:3px;background:${colScore(d.reddit.sentiment_score||0.5)};width:${Math.round((d.reddit.sentiment_score||0.5)*100)}%"></div>
+    </div>
+    ${redditPosts}
+  </div>`;
+
+  // ⑤ News
+  const newsItems = (d.news.articles || []).slice(0,8).map(a=>`
+    <a href="${a.link}" target="_blank" style="display:block;text-decoration:none;padding:8px 0;border-bottom:1px solid rgba(255,255,255,.06)">
+      <div style="display:flex;align-items:flex-start;gap:8px">
+        <span style="font-size:.68rem;flex-shrink:0;margin-top:2px">${a.sentiment==='positive'?'🟢':a.sentiment==='negative'?'🔴':'⚪'}</span>
+        <div>
+          <div style="font-size:.82rem;color:var(--text);line-height:1.4">${a.title}</div>
+          <div style="font-size:.68rem;color:var(--dim);margin-top:2px">${a.date}</div>
+        </div>
+      </div>
+    </a>`).join('') || '<div style="color:var(--muted);font-size:.8rem">No news found.</div>';
+
+  const newsCount = d.news;
+  const news = `
+  <div style="background:var(--panel);border:1px solid var(--border);border-radius:var(--r);padding:18px 20px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;flex-wrap:wrap;gap:8px">
+      <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.09em;color:var(--dim)">📰 News Sentiment</div>
+      <div style="font-size:.78rem;color:var(--muted)">
+        🟢 ${newsCount.positive_count||0} positive &nbsp;·&nbsp; 🔴 ${newsCount.negative_count||0} negative &nbsp;·&nbsp; ⚪ ${newsCount.neutral_count||0} neutral
+      </div>
+    </div>
+    ${newsItems}
+  </div>`;
+
+  document.getElementById('sent-results').innerHTML = [overall, claude, trendsSection, reddit, news].join('');
+
+  // Draw Plotly trends chart
+  if (!d.trends.error && d.trends.series && Object.keys(d.trends.series).length) {
+    const colors = ['#58a6ff','#3fb950','#e3b341','#a371f7','#f85149'];
+    const traces = Object.entries(d.trends.series).map(([term, s], i) => ({
+      x: d.trends.dates, y: s.values, type: 'scatter', mode: 'lines',
+      name: term, line: {color: colors[i % colors.length], width: 2},
+      hovertemplate: `${term}: %{y}/100<extra></extra>`,
+    }));
+    Plotly.newPlot('sent-trends-chart', traces, {
+      template: 'plotly_dark', paper_bgcolor: '#161b22', plot_bgcolor: '#161b22',
+      margin: {l:35, r:10, t:10, b:35}, showlegend: false,
+      xaxis: {gridcolor:'#21262d'}, yaxis: {gridcolor:'#21262d', range:[0,105]},
+      font: {color:'#c9d1d9', size:10}, hovermode: 'x unified',
+    }, {responsive: true, displayModeBar: false});
+  }
+}
 
 // ══ STRATEGY ════════════════════════════════════════════
 document.getElementById('strategy-refresh-btn').addEventListener('click', () => loadPortfolioStrategy(true));

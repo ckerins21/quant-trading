@@ -7,3 +7,6 @@ fastapi
 uvicorn[standard]
 plotly
 jinja2
+pytrends
+anthropic
+requests
