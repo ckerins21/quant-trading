@@ -2,7 +2,10 @@ import sys
 import os
 import json
 import time
+import re as _re
+import asyncio
 import xml.etree.ElementTree as ET
+from urllib.parse import quote as _url_quote
 from datetime import datetime, timedelta
 
 _SRC = os.path.dirname(os.path.abspath(__file__))
@@ -25,6 +28,8 @@ from performance import (
     annualized_return,
     annualized_volatility,
     sharpe_ratio,
+    sortino_ratio,
+    calmar_ratio,
     max_drawdown,
 )
 from indicators import (
@@ -418,14 +423,40 @@ async def get_quote(symbol: str):
 
 # ── backtest ──────────────────────────────────────────────────────────────────
 
+def _backtest_apply_stop_loss(positions: "np.ndarray", prices: "np.ndarray", stop_pct: float) -> "np.ndarray":
+    """Trailing stop: exit when close falls stop_pct% below peak-since-entry."""
+    positions = positions.copy().astype(float)
+    stopped = False
+    peak = None
+    for i in range(len(positions)):
+        if positions[i] > 0:
+            if stopped:
+                positions[i] = 0.0
+                continue
+            peak = prices[i] if peak is None else max(peak, prices[i])
+            if (prices[i] - peak) / peak < -stop_pct:
+                positions[i] = 0.0
+                stopped = True
+                peak = None
+        else:
+            stopped = False
+            peak = None
+    return positions
+
+
 @app.get("/api/backtest")
 async def run_backtest(
-    symbol: str = Query("AAPL"),
-    start:  str = Query("2020-01-01"),
-    end:    str = Query(None),
-    short_window:    int   = Query(50),
-    long_window:     int   = Query(200),
+    symbol:         str   = Query("AAPL"),
+    start:          str   = Query("2020-01-01"),
+    end:            str   = Query(None),
+    short_window:   int   = Query(50),
+    long_window:    int   = Query(200),
     initial_capital: float = Query(10000),
+    mode:           str   = Query("long_only"),   # "long_only" | "long_short"
+    commission_pct: float = Query(0.001),          # 0.1% per one-way leg
+    slippage_pct:   float = Query(0.001),          # 0.1% per one-way leg
+    sizing:         str   = Query("full"),         # "full" | "half" | "vol_target"
+    stop_loss_pct:  float = Query(None),           # None = disabled
 ):
     if end is None:
         end = datetime.today().strftime("%Y-%m-%d")
@@ -439,13 +470,41 @@ async def run_backtest(
     if len(df) < long_window + 5:
         raise HTTPException(400, f"Need at least {long_window + 5} trading days — try an earlier start date.")
 
-    df = moving_average_crossover_signals(df, short_window=short_window, long_window=long_window)
-    df["returns"]          = compute_daily_returns(df["Close"])
+    df = moving_average_crossover_signals(df, short_window=short_window, long_window=long_window, mode=mode)
+    df["returns"] = compute_daily_returns(df["Close"])
+
+    # Apply stop-loss (before sizing)
+    pos_arr = df["position"].values.copy()
+    if stop_loss_pct and stop_loss_pct > 0:
+        pos_arr = _backtest_apply_stop_loss(pos_arr, df["Close"].values, stop_loss_pct)
+
+    # Apply position sizing
+    if sizing == "half":
+        pos_arr = pos_arr * 0.5
+    elif sizing == "vol_target":
+        TARGET_VOL, LOOKBACK = 0.15, 20
+        rets = df["returns"].values
+        sizes = np.ones(len(rets))
+        for i in range(LOOKBACK, len(rets)):
+            rv = float(np.std(rets[i - LOOKBACK:i], ddof=1)) * np.sqrt(252)
+            sizes[i] = min(1.0, TARGET_VOL / rv) if rv > 0 else 1.0
+        pos_arr = pos_arr * sizes
+
+    df["position"] = pos_arr
+
+    # Strategy returns — position already has 1-bar execution lag from signal.shift(1)
     df["strategy_returns"] = df["position"] * df["returns"]
+
+    # Transaction costs: cost_per_leg × |position change|
+    cost_per_leg = commission_pct + slippage_pct
+    df["position_change"]   = df["position"].diff().abs().fillna(0)
+    df["cost"]              = df["position_change"] * cost_per_leg
+    df["strategy_returns"] -= df["cost"]
+
     df["cumulative_returns"] = compute_cumulative_returns(df["strategy_returns"])
-    df["buyhold_returns"]  = compute_cumulative_returns(df["returns"])
-    df["portfolio_value"]  = initial_capital * (1 + df["cumulative_returns"])
-    df["rsi"]              = relative_strength_index(df["Close"])
+    df["buyhold_returns"]    = compute_cumulative_returns(df["returns"])
+    df["portfolio_value"]    = initial_capital * (1 + df["cumulative_returns"])
+    df["rsi"]                = relative_strength_index(df["Close"])
     bb = bollinger_bands(df["Close"])
     df = pd.concat([df, bb], axis=1)
 
@@ -453,14 +512,21 @@ async def run_backtest(
     ann_ret  = float(annualized_return(df["strategy_returns"]))
     ann_vol  = float(annualized_volatility(df["strategy_returns"]))
     s_ratio  = float(sharpe_ratio(df["strategy_returns"]))
+    sor      = float(sortino_ratio(df["strategy_returns"]))
+    cal      = float(calmar_ratio(df["strategy_returns"], df["cumulative_returns"]))
     mdd      = float(max_drawdown(df["cumulative_returns"]))
     bh_total = float(df["buyhold_returns"].iloc[-1])
+    bh_ann   = float(annualized_return(df["returns"]))
+    bh_sharpe= float(sharpe_ratio(df["returns"]))
+    bh_mdd   = float(max_drawdown(df["buyhold_returns"]))
+    total_cost = float(df["cost"].sum())
     final_value = float(df["portfolio_value"].iloc[-1])
+    num_exec_trades = int((df["position_change"] > 0).sum())
 
+    # Signal-change trade markers (for chart annotation — before sizing/stop)
     sig_diff  = df["signal"].diff().fillna(0)
     buy_pts   = df[sig_diff > 0]
     sell_pts  = df[sig_diff < 0]
-    trades    = len(buy_pts) + len(sell_pts)
 
     trade_list = []
     for idx, row in buy_pts.iterrows():
@@ -555,14 +621,28 @@ async def run_backtest(
     return {
         "chart": json.loads(fig.to_json()),
         "metrics": {
+            # Strategy
             "total_return":    round(total_return * 100, 2),
             "ann_return":      round(ann_ret * 100, 2),
             "ann_volatility":  round(ann_vol * 100, 2),
             "sharpe_ratio":    round(s_ratio, 3),
+            "sortino_ratio":   round(sor, 3),
+            "calmar_ratio":    round(cal, 3),
             "max_drawdown":    round(mdd * 100, 2),
+            # Benchmark
             "buyhold_return":  round(bh_total * 100, 2),
+            "buyhold_ann_return": round(bh_ann * 100, 2),
+            "buyhold_sharpe":  round(bh_sharpe, 3),
+            "buyhold_max_drawdown": round(bh_mdd * 100, 2),
+            # Edge
             "vs_buyhold":      vs_bh,
-            "trades":          trades,
+            # Execution
+            "trades":          num_exec_trades,
+            "total_cost_drag": round(total_cost * 100, 3),
+            "mode":            mode,
+            "sizing":          sizing,
+            "stop_loss_pct":   round(stop_loss_pct * 100, 1) if stop_loss_pct else None,
+            # Capital
             "final_value":     round(final_value, 2),
             "initial_capital": initial_capital,
             "grade":           grade,
@@ -1130,10 +1210,13 @@ async def recommend(symbol: str):
 
 @app.get("/api/optimize")
 async def optimize(
-    symbol: str = Query("AAPL"),
-    start:  str = Query("2020-01-01"),
-    end:    str = Query(None),
+    symbol:         str   = Query("AAPL"),
+    start:          str   = Query("2020-01-01"),
+    end:            str   = Query(None),
     initial_capital: float = Query(10000),
+    mode:           str   = Query("long_only"),
+    commission_pct: float = Query(0.001),
+    slippage_pct:   float = Query(0.001),
 ):
     if end is None:
         end = datetime.today().strftime("%Y-%m-%d")
@@ -1144,6 +1227,7 @@ async def optimize(
     except ValueError as e:
         raise HTTPException(400, str(e))
 
+    cost_per_leg  = commission_pct + slippage_pct
     short_windows = [10, 20, 50, 100]
     long_windows  = [50, 100, 200, 300]
     results = []
@@ -1153,46 +1237,52 @@ async def optimize(
             if sw >= lw or lw > len(df_base) - 5:
                 continue
             df = df_base.copy()
-            df = moving_average_crossover_signals(df, short_window=sw, long_window=lw)
-            df["returns"]          = compute_daily_returns(df["Close"])
-            df["strat_returns"]    = df["position"] * df["returns"]
-            df["cum_returns"]      = compute_cumulative_returns(df["strat_returns"])
-            df["bh_returns"]       = compute_cumulative_returns(df["returns"])
+            df = moving_average_crossover_signals(df, short_window=sw, long_window=lw, mode=mode)
+            df["returns"]       = compute_daily_returns(df["Close"])
+            df["strat_returns"] = df["position"] * df["returns"]
+            # Deduct costs
+            df["strat_returns"] -= df["position"].diff().abs().fillna(0) * cost_per_leg
+            df["cum_returns"]   = compute_cumulative_returns(df["strat_returns"])
+            df["bh_returns"]    = compute_cumulative_returns(df["returns"])
 
             tr    = float(df["cum_returns"].iloc[-1]) * 100
             bh    = float(df["bh_returns"].iloc[-1])  * 100
             ar    = float(annualized_return(df["strat_returns"])) * 100
             vol   = float(annualized_volatility(df["strat_returns"])) * 100
             sh    = float(sharpe_ratio(df["strat_returns"]))
+            sor   = float(sortino_ratio(df["strat_returns"]))
             dd    = float(max_drawdown(df["cum_returns"])) * 100
-            tr_n  = int((df["signal"].diff().fillna(0) != 0).sum())
+            tr_n  = int((df["position"].diff().abs().fillna(0) > 0).sum())
             fv    = initial_capital * (1 + float(df["cum_returns"].iloc[-1]))
             vs_bh = round(tr - bh, 2)
 
             results.append({
                 "short": sw, "long": lw,
-                "total_return": round(tr, 2),
+                "total_return":   round(tr, 2),
                 "buyhold_return": round(bh, 2),
-                "vs_buyhold": vs_bh,
-                "ann_return": round(ar, 2),
-                "volatility": round(vol, 2),
-                "sharpe": round(sh, 3),
-                "max_drawdown": round(dd, 2),
-                "trades": tr_n,
-                "final_value": round(fv, 2),
-                "grade": _grade(sh, dd, vs_bh),
+                "vs_buyhold":     vs_bh,
+                "ann_return":     round(ar, 2),
+                "volatility":     round(vol, 2),
+                "sharpe":         round(sh, 3),
+                "sortino":        round(sor, 3),
+                "max_drawdown":   round(dd, 2),
+                "trades":         tr_n,
+                "final_value":    round(fv, 2),
+                "grade":          _grade(sh, dd, vs_bh),
             })
 
     results.sort(key=lambda x: x["sharpe"], reverse=True)
     bh = results[0]["buyhold_return"] if results else 0
 
     return {
-        "results": results,
+        "results":        results,
         "buyhold_return": round(bh, 2),
-        "symbol": symbol,
-        "start": start,
-        "end": end,
+        "symbol":         symbol,
+        "start":          start,
+        "end":            end,
         "initial_capital": initial_capital,
+        "mode":           mode,
+        "cost_per_leg":   round(cost_per_leg * 100, 3),
     }
 
 
@@ -2537,3 +2627,201 @@ async def product_trend_search(term: str = Query(...)):
         return {"error": "pytrends not installed — run: pip install pytrends"}
     except Exception as e:
         return {"error": str(e), "term": term}
+
+
+# ── Market Pulse — proactive trend discovery ────────────────────────────────
+
+_NOISE_WORDS = {
+    "THE","FOR","ARE","NOT","AND","BUT","OR","ITS","ALL","MY","YOUR","IS","AT","BY","NEW",
+    "FROM","WILL","WITH","THIS","UP","DOWN","IN","OUT","BE","NOW","CEO","IPO","ETF","AI",
+    "US","IT","ON","TO","AN","AS","USA","GDP","FED","SEC","IRS","FDA","NYSE","OTC","IMO",
+    "DD","WSB","GET","GOT","CAN","WAS","HAS","HAD","HOW","WHY","NO","YES","OK","HIGH",
+    "LOW","BIG","CALL","PUT","BUY","SELL","HOLD","EOD","EPS","PE","YOY","QOQ","MOM",
+    "ATH","ATL","FOMO","YOLO","TLDR","DCA","EOY","EOW","TA","FA","CPI","PPI","FOMC",
+    "RATE","DEBT","CASH","DIV","BOND","VAR","AH","PM","AM","RE","IF","DO","SO","GO",
+    "OF","HI","LO","VIX","SPY","QQQ","SPX","BTC","ETH","FTX","ANY","TWO","ONE","SIX",
+    "TEN","MAY","JAN","FEB","MAR","APR","JUN","JUL","AUG","SEP","OCT","NOV","DEC",
+    "US","IMF","WHO","EU","UK","USD","EUR","GBP","JPY","CAD","AUD","NEED","JUST","ALSO",
+    "STILL","EVEN","MUCH","MORE","THAN","OVER","BACK","INTO","ONLY","ABOUT","MADE","MAKE",
+    "SOME","WHAT","THEY","THEM","THAT","BEEN","HAVE","DOES","DONE","VERY","MOST","BOTH",
+    "EACH","SUCH","SAME","WELL","LONG","NEXT","TAKE","GOOD","SAID","COME","ALSO","THEN",
+    "TIME","YEAR","WEEK","DAYS","LAST","JUST","WHEN","LOOK","HELP","WORK","NEWS","LOSE",
+    "WIN","SEE","WAY","SET","OWN","TOO","OFF","HIM","HIS","HER","WENT","FEEL","DEAL",
+}
+
+def _reddit_trending_tickers() -> dict:
+    """Fetch hot Reddit posts and count ticker mentions."""
+    headers = {"User-Agent": "QuantDash/1.0"}
+    ticker_data: dict = {}  # symbol -> {mentions, score, comments, titles, sentiment_pos, sentiment_neg}
+    TICKER_PAT = _re.compile(r'\$([A-Z]{1,5})\b|(?<!\w)([A-Z]{2,5})(?!\w)')
+
+    subreddits = [
+        ("wallstreetbets", "hot", 25),
+        ("stocks", "hot", 25),
+        ("investing", "hot", 20),
+        ("stockmarket", "rising", 20),
+        ("options", "hot", 15),
+    ]
+
+    for sub, sort, limit in subreddits:
+        try:
+            r = _requests.get(
+                f"https://www.reddit.com/r/{sub}/{sort}.json?limit={limit}",
+                headers=headers, timeout=8,
+            )
+            posts = r.json().get("data", {}).get("children", [])
+            for post in posts:
+                p = post.get("data", {})
+                title = p.get("title", "")
+                text  = p.get("selftext", "")[:500]
+                post_score    = p.get("score", 0)
+                post_comments = p.get("num_comments", 0)
+                post_url      = f"https://reddit.com{p.get('permalink', '')}"
+
+                combined = (title + " " + text).upper()
+                words_in_title = set(_re.findall(r'[A-Z]{2,5}', title.upper()))
+
+                # Keyword sentiment of this post
+                words_lower = (title + " " + text).lower().split()
+                pos = sum(1 for w in words_lower if w in _POS_WORDS)
+                neg = sum(1 for w in words_lower if w in _NEG_WORDS)
+                post_sentiment = "positive" if pos > neg else "negative" if neg > pos else "neutral"
+
+                # Find all $ prefixed tickers (high confidence) + standalone caps
+                dollar_tickers = set(_re.findall(r'\$([A-Z]{1,5})\b', combined))
+                cap_words = set(_re.findall(r'(?<![A-Z])([A-Z]{2,5})(?![A-Z])', combined))
+                cap_words -= _NOISE_WORDS
+
+                candidates = dollar_tickers | (cap_words if dollar_tickers else cap_words & words_in_title)
+
+                for sym in candidates:
+                    if sym in _NOISE_WORDS:
+                        continue
+                    if sym not in ticker_data:
+                        ticker_data[sym] = {
+                            "symbol": sym,
+                            "mentions": 0,
+                            "total_score": 0,
+                            "total_comments": 0,
+                            "pos": 0,
+                            "neg": 0,
+                            "posts": [],
+                            "subreddits": set(),
+                        }
+                    td = ticker_data[sym]
+                    td["mentions"] += 1
+                    td["total_score"] += post_score
+                    td["total_comments"] += post_comments
+                    td["subreddits"].add(sub)
+                    if post_sentiment == "positive":
+                        td["pos"] += 1
+                    elif post_sentiment == "negative":
+                        td["neg"] += 1
+                    if len(td["posts"]) < 3:
+                        td["posts"].append({
+                            "title":     title[:120],
+                            "score":     post_score,
+                            "comments":  post_comments,
+                            "url":       post_url,
+                            "subreddit": sub,
+                        })
+        except Exception:
+            continue
+
+    # Filter: need at least 2 mentions, skip single-letter + extreme noise
+    valid = {
+        sym: d for sym, d in ticker_data.items()
+        if d["mentions"] >= 2 and len(sym) >= 2 and sym not in _NOISE_WORDS
+    }
+
+    # Score: mentions (weighted) + upvotes signal
+    def _rank(d):
+        return d["mentions"] * 10 + min(d["total_score"] / 100, 20) + min(d["total_comments"] / 50, 10)
+
+    top = sorted(valid.values(), key=_rank, reverse=True)[:15]
+
+    for t in top:
+        t["subreddits"] = sorted(t["subreddits"])
+        total_sent = t["pos"] + t["neg"]
+        if total_sent:
+            s = t["pos"] / total_sent
+            t["sentiment"] = "Bullish" if s > 0.6 else "Bearish" if s < 0.4 else "Mixed"
+            t["sentiment_score"] = round(s, 2)
+        else:
+            t["sentiment"] = "Neutral"
+            t["sentiment_score"] = 0.5
+
+    return {"tickers": top, "source": "reddit_hot"}
+
+
+def _news_trending_themes() -> dict:
+    """Fetch Google News RSS for broad market themes — no specific ticker needed."""
+    queries = [
+        ("stocks to watch", "Stocks to Watch"),
+        ("stock market today", "Market Today"),
+        ("earnings this week", "Earnings"),
+        ("sector rotation stocks", "Sector Rotation"),
+        ("stock breakout technical", "Breakouts"),
+    ]
+
+    all_articles = []
+    for q, label in queries:
+        try:
+            url = f"https://news.google.com/rss/search?q={_url_quote(q)}+stock&hl=en-US&gl=US&ceid=US:en"
+            r = _requests.get(url, timeout=8, headers=_PRICE_HEADERS)
+            root = ET.fromstring(r.content)
+            for item in root.iter("item"):
+                title = (item.findtext("title") or "").strip()
+                link  = (item.findtext("link") or "").strip()
+                pub   = (item.findtext("pubDate") or "")[:22].strip()
+                if not title:
+                    continue
+                words = title.lower().split()
+                pos = sum(1 for w in words if w in _POS_WORDS)
+                neg = sum(1 for w in words if w in _NEG_WORDS)
+                all_articles.append({
+                    "title":     title,
+                    "link":      link,
+                    "date":      pub,
+                    "theme":     label,
+                    "sentiment": "positive" if pos > neg else "negative" if neg > pos else "neutral",
+                })
+        except Exception:
+            continue
+
+    # Deduplicate by title similarity (skip near-identical headlines)
+    seen_titles: set = set()
+    deduped = []
+    for a in all_articles:
+        key = a["title"][:60].lower()
+        if key not in seen_titles:
+            seen_titles.add(key)
+            deduped.append(a)
+
+    return {"articles": deduped[:20]}
+
+
+_pulse_cache: dict = {}  # single entry, 30-min TTL
+
+
+@app.get("/api/trends/market-pulse")
+async def market_pulse(fresh: bool = Query(False)):
+    """Proactively discover trending stocks and market themes — no ticker input needed."""
+    now = time.time()
+    if not fresh and "data" in _pulse_cache:
+        age, data = _pulse_cache["data"]
+        if now - age < 1800:  # 30-minute cache
+            return data
+
+    loop = asyncio.get_event_loop()
+    reddit_fut = loop.run_in_executor(None, _reddit_trending_tickers)
+    news_fut   = loop.run_in_executor(None, _news_trending_themes)
+    reddit_data, news_data = await asyncio.gather(reddit_fut, news_fut)
+
+    result = {
+        "tickers":  reddit_data.get("tickers", []),
+        "articles": news_data.get("articles", []),
+        "updated":  datetime.now().strftime("%H:%M on %d %b"),
+    }
+    _pulse_cache["data"] = (now, result)
+    return result

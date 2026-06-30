@@ -13,6 +13,11 @@ env/
 # Cache (large binary market data files)
 cache/
 
+# Personal portfolio data — never push real holdings/capital to GitHub
+portfolio.json
+portfolio_history.json
+watchlist.json
+
 # OS
 .DS_Store
 Thumbs.db

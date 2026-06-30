@@ -927,6 +927,20 @@ tbody tr:hover td{background:rgba(88,166,255,.03)}
   <div style="flex:1;overflow-y:auto">
     <div style="padding:20px;max-width:1100px;width:100%;margin:0 auto">
 
+      <!-- ── Market Pulse: auto-loaded on tab open ── -->
+      <div style="background:var(--panel);border:1px solid var(--border);border-radius:var(--r);padding:18px 20px;margin-bottom:18px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;gap:10px;flex-wrap:wrap">
+          <div>
+            <div style="font-size:1rem;font-weight:700">🔥 What's Trending Right Now</div>
+            <div style="font-size:.74rem;color:var(--muted);margin-top:2px">Auto-scanned from Reddit hot posts &amp; market news — updated every 30 min</div>
+          </div>
+          <button id="pulse-refresh-btn" class="btn btn-ghost" style="font-size:.78rem;white-space:nowrap">↻ Refresh</button>
+        </div>
+        <div id="pulse-container">
+          <div style="color:var(--muted);font-size:.82rem;padding:20px;text-align:center">Loading trending stocks…</div>
+        </div>
+      </div>
+
       <!-- Search bar -->
       <div style="background:var(--panel);border:1px solid var(--border);border-radius:var(--r);padding:18px 20px;margin-bottom:18px">
         <div style="font-size:1rem;font-weight:700;margin-bottom:4px">📡 Trends &amp; Sentiment Scanner</div>
@@ -2835,6 +2849,97 @@ function initSentimentTab() {
 
   document.getElementById('sent-prod-btn').addEventListener('click', runProductTrend);
   document.getElementById('sent-prod-only').addEventListener('keydown', e => { if (e.key==='Enter') runProductTrend(); });
+
+  // Auto-load market pulse when tab first opens
+  document.getElementById('pulse-refresh-btn').addEventListener('click', () => loadMarketPulse(true));
+  loadMarketPulse(false);
+}
+
+async function loadMarketPulse(fresh = false) {
+  const container = document.getElementById('pulse-container');
+  container.innerHTML = `<div style="padding:20px;text-align:center"><div class="spin" style="margin:auto"></div>
+    <div style="margin-top:12px;color:var(--muted);font-size:.8rem">Scanning Reddit &amp; news for trending stocks…</div></div>`;
+  try {
+    const r = await fetch(`/api/trends/market-pulse${fresh ? '?fresh=true' : ''}`);
+    if (!r.ok) throw new Error('Failed');
+    renderMarketPulse(await r.json());
+  } catch(e) {
+    container.innerHTML = `<div style="color:var(--red);font-size:.82rem;padding:12px">Could not load market pulse: ${e.message}</div>`;
+  }
+}
+
+function renderMarketPulse(data) {
+  const container = document.getElementById('pulse-container');
+  const tickers = data.tickers || [];
+  const articles = data.articles || [];
+  const updated  = data.updated || '';
+
+  const sentColor = s => s === 'Bullish' ? 'var(--green)' : s === 'Bearish' ? 'var(--red)' : 'var(--yellow)';
+  const sentEmoji = s => s === 'Bullish' ? '🟢' : s === 'Bearish' ? '🔴' : '🟡';
+
+  let html = '';
+
+  // ── Trending Tickers ──
+  if (tickers.length) {
+    html += `<div style="margin-bottom:16px">
+      <div style="font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--dim);margin-bottom:10px">
+        📊 Most Mentioned Tickers on Reddit Right Now
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:8px">`;
+
+    for (const t of tickers.slice(0, 12)) {
+      const subs = (t.subreddits || []).map(s => `r/${s}`).join(', ');
+      const topPost = t.posts && t.posts[0];
+      html += `
+        <div style="background:var(--card);border:1px solid var(--border);border-radius:var(--r);padding:10px 14px;cursor:pointer;min-width:120px;transition:border-color .15s"
+             onclick="document.getElementById('sent-sym').value='${t.symbol}'; runSentimentScan(false);"
+             title="${topPost ? topPost.title : ''}\n${subs}">
+          <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
+            <span style="font-weight:700;font-size:.95rem">${t.symbol}</span>
+            <span style="font-size:.72rem;color:${sentColor(t.sentiment)}">${sentEmoji(t.sentiment)}</span>
+          </div>
+          <div style="font-size:.7rem;color:var(--muted)">${t.mentions} mentions</div>
+          <div style="font-size:.68rem;color:var(--dim);margin-top:2px">${t.total_score > 0 ? `${t.total_score.toLocaleString()} pts` : ''}</div>
+          <div style="font-size:.65rem;color:var(--dim);margin-top:2px">${subs}</div>
+        </div>`;
+    }
+    html += `</div>
+      <div style="font-size:.68rem;color:var(--dim);margin-top:8px">Click any ticker to run a full sentiment scan on it.</div>
+    </div>`;
+  }
+
+  // ── Trending News Themes ──
+  if (articles.length) {
+    html += `<div>
+      <div style="font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--dim);margin-bottom:10px">
+        📰 Market News &amp; Themes to Research
+      </div>
+      <div style="display:flex;flex-direction:column;gap:6px">`;
+
+    for (const a of articles.slice(0, 10)) {
+      const sentC = a.sentiment === 'positive' ? 'var(--green)' : a.sentiment === 'negative' ? 'var(--red)' : 'var(--muted)';
+      html += `
+        <div style="display:flex;align-items:flex-start;gap:10px;padding:8px 10px;background:var(--card);border-radius:calc(var(--r) - 2px);border-left:3px solid ${sentC}">
+          <div style="flex:1;min-width:0">
+            <a href="${a.link}" target="_blank" rel="noopener"
+               style="color:var(--text);font-size:.82rem;text-decoration:none;line-height:1.3;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+               title="${a.title}">${a.title}</a>
+            <div style="font-size:.68rem;color:var(--dim);margin-top:3px">${a.theme} · ${a.date}</div>
+          </div>
+        </div>`;
+    }
+    html += `</div></div>`;
+  }
+
+  if (!tickers.length && !articles.length) {
+    html = `<div style="color:var(--muted);font-size:.82rem;padding:12px">No trending data found — Reddit may be rate-limiting. Try refreshing.</div>`;
+  }
+
+  if (updated) {
+    html += `<div style="font-size:.67rem;color:var(--dim);margin-top:12px;text-align:right">Last updated: ${updated}</div>`;
+  }
+
+  container.innerHTML = html;
 }
 
 async function runSentimentScan(fresh = false) {
